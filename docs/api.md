@@ -54,6 +54,111 @@ Error behavior:
 - Returns `404` when the requested path does not exist
 - Returns `500` for other unexpected failures
 
+### `GET /api/files/content?path=/...`
+
+Reads a UTF-8 text file from the host filesystem.
+
+Query parameters:
+
+- `path`: requested absolute file path
+
+Behavior notes:
+
+- The endpoint rejects directories with `400`
+- The endpoint rejects non-text files that contain null bytes with `415`
+- The endpoint limits previews to 1 MB and returns `413` when exceeded
+
+Success response:
+
+```json
+{
+  "path": "D:/node/node_explorer/README.md",
+  "name": "README.md",
+  "content": "# Node Explorer\n",
+  "encoding": "utf8",
+  "size": 14,
+  "modifiedAt": "2026-04-25T08:15:00.000Z"
+}
+```
+
+Error behavior:
+
+- Returns `400` for invalid or non-file paths
+- Returns `403` when the process lacks permission to read the file
+- Returns `404` when the requested path does not exist
+- Returns `413` when the file exceeds the 1 MB text preview limit
+- Returns `415` when the file is not treated as UTF-8 text
+- Returns `500` for other unexpected failures
+
+### `PUT /api/files/content`
+
+Writes UTF-8 text content back to an existing file.
+
+Request body:
+
+```json
+{
+  "path": "D:/node/node_explorer/README.md",
+  "content": "# Node Explorer\n\nUpdated content"
+}
+```
+
+Behavior notes:
+
+- The endpoint writes only existing files; it does not create new files yet
+- The endpoint limits saved content to 1 MB and returns `413` when exceeded
+
+Success response:
+
+```json
+{
+  "path": "D:/node/node_explorer/README.md",
+  "name": "README.md",
+  "size": 33,
+  "modifiedAt": "2026-04-25T08:20:00.000Z"
+}
+```
+
+Error behavior:
+
+- Returns `400` for invalid request bodies or non-file paths
+- Returns `403` when the process lacks permission to write the file
+- Returns `404` when the requested path does not exist
+- Returns `413` when the updated file exceeds the 1 MB text save limit
+- Returns `500` for other unexpected failures
+
+### `GET /api/terminal/socket`
+
+Opens a websocket-backed PTY terminal session.
+
+Query parameters:
+
+- `cwd`: optional absolute directory path used as the initial working directory
+- `cols`: optional initial terminal width, clamped server-side
+- `rows`: optional initial terminal height, clamped server-side
+
+Behavior notes:
+
+- Each websocket connection gets its own PTY session
+- On Windows, the server currently starts `powershell.exe -NoLogo`
+- Shell completion comes from the shell running inside the PTY, not from a separate API
+
+Server-to-client messages:
+
+```json
+{ "type": "ready", "cwd": "D:/node/node_explorer", "shell": "powershell.exe" }
+{ "type": "output", "data": "PS D:\\node\\node_explorer> " }
+{ "type": "exit", "exitCode": 0, "signal": 0 }
+{ "type": "error", "error": "Requested terminal path is not a directory" }
+```
+
+Client-to-server messages:
+
+```json
+{ "type": "input", "data": "dir\r" }
+{ "type": "resize", "cols": 120, "rows": 32 }
+```
+
 ## Planned Endpoints
 
 These are part of the intended product design but are not implemented yet.
@@ -71,7 +176,6 @@ These are part of the intended product design but are not implemented yet.
 - `POST /api/files/copy`
 - `DELETE /api/files`
 - `POST /api/files/mkdir`
-- `GET /api/files/content`
 
 ### Transfer
 
@@ -108,7 +212,6 @@ These are part of the intended product design but are not implemented yet.
 
 ### Realtime Namespaces Planned
 
-- `/terminal`
 - `/files`
 - `/fetch`
 

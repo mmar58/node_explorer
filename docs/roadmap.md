@@ -7,7 +7,9 @@ Completed:
 - Backend scaffold in `server/`
 - Health endpoint
 - Safe directory listing endpoint
-- Minimal client browser page using the API
+- Text-file read and save endpoints for UTF-8 files up to 1 MB
+- PTY-backed terminal websocket endpoint
+- Client workspace page with browser, editor, and terminal panels
 - Root workspace scripts for running and checking both apps
 
 In progress direction:
@@ -20,8 +22,7 @@ Not started yet:
 - File mutations
 - Upload and download workflows
 - Remote fetch from URL with resume support
-- Terminal
-- Code editor and media preview
+- Media preview
 - Admin tools
 - Archive operations
 
@@ -78,7 +79,7 @@ Goal:
 
 Current state:
 
-- Not started
+- In progress: terminal and text editing are implemented; media preview is not started
 
 ### Milestone 5: Admin and Policy
 

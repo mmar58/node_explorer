@@ -4,6 +4,7 @@ import Fastify from 'fastify';
 import { config } from './config.js';
 import { fileRoutes } from './routes/files.js';
 import { healthRoutes } from './routes/health.js';
+import { terminalRoutes } from './routes/terminal.js';
 
 const app = Fastify({ logger: true });
 
@@ -13,6 +14,7 @@ await app.register(cors, {
 
 await app.register(healthRoutes);
 await app.register(fileRoutes);
+await app.register(terminalRoutes);
 
 try {
 	await app.listen({ port: config.port, host: config.host });

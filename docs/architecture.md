@@ -16,8 +16,10 @@ The system is intended to grow in thin vertical slices rather than large isolate
 The client currently has:
 
 - A top-level Svelte layout
-- A home page that fetches directory listings from the backend
+- A home page that combines directory browsing, a text editor workspace, and an embedded terminal
 - A small typed API wrapper in `client/src/lib/api.ts`
+- A Monaco-based code editor component for UTF-8 text files
+- An xterm.js terminal component connected to the backend websocket
 
 ### Server
 
@@ -26,10 +28,14 @@ The server currently has:
 - `src/index.ts`: app bootstrap and route registration
 - `src/config.ts`: runtime host and port configuration
 - `src/routes/health.ts`: liveness endpoint
-- `src/routes/files.ts`: directory listing endpoint
-- `src/services/fs.ts`: host-filesystem directory reads, Windows drive discovery, and parent-path calculation
+- `src/routes/files.ts`: directory listing plus text-file read and save endpoints
+- `src/routes/terminal.ts`: websocket route for terminal sessions
+- `src/services/fs.ts`: host-filesystem directory reads, Windows drive discovery, parent-path calculation, and text-file read/write helpers
+- `src/services/terminal.ts`: PTY session setup and working-directory validation
 
 The current files API exposes the host filesystem. On Windows, the API uses a virtual `/` that lists available drive roots and then navigates using absolute paths such as `C:/Users`.
+
+The terminal slice currently uses `@fastify/websocket` and `node-pty` directly. Each websocket connection creates one PTY process, streams output back to the browser, and accepts input and resize events from the client.
 
 ## Planned Architecture
 
@@ -78,6 +84,6 @@ The current codebase is following this sequence:
 
 1. Safe read-only backend slices
 2. Client integration for those slices
-3. Auth and permission boundaries
-4. Mutations and transfer workflows
-5. Terminal, editor, and admin features
+3. Narrow mutations that keep validation in the filesystem service
+4. Auth and permission boundaries
+5. Transfer workflows, richer terminal/editor flows, and admin features

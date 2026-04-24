@@ -6,8 +6,8 @@ The repository currently contains the first end-to-end slice:
 
 - A Svelte client in `client/`
 - A Fastify server in `server/`
-- A working `GET /api/files` endpoint that can browse the host filesystem
-- A minimal frontend file browser wired to the backend
+- Working filesystem browsing plus UTF-8 text-file read and save endpoints
+- A browser workspace UI with file browsing, code editing, and an embedded terminal
 
 ## Current Status
 
@@ -16,25 +16,29 @@ Implemented now:
 - Fastify server scaffold with TypeScript
 - `GET /api/health`
 - `GET /api/files?path=/...`
+- `GET /api/files/content?path=/...`
+- `PUT /api/files/content`
+- `GET /api/terminal/socket` websocket endpoint backed by a PTY
 - Absolute-path browsing across the serving machine
 - Windows drive listing at `/` with parent-path aware navigation
-- Minimal browser UI on the client home page
+- Browser UI on the client home page with directory navigation, text editing, and terminal access
 
 Planned next:
 
 - Auth and permissions
 - File actions: stat, mkdir, rename, move, copy, delete
 - Upload, download, and resumable remote fetch from URL
-- Terminal, code editor, media preview, admin panel, archive operations
+- Media preview, admin panel, archive operations, and richer permission-aware terminal/editor workflows
 
 ## Tech Stack
 
 - Frontend: SvelteKit 5, Tailwind CSS v4, shadcn-svelte, Lucide
 - Backend: Node.js, TypeScript, Fastify
+- Current browser tools: Monaco Editor, xterm.js, node-pty, Fastify websocket
 - Database plan: MySQL via Knex, plus SQLite for instant job and transfer state
 - Realtime plan: Socket.IO
 - File transfer plan: busboy, tus, range-aware downloads
-- Terminal plan: node-pty
+- Terminal plan: permission-aware sessions and richer multi-tab management on top of the current PTY slice
 
 ## Repository Layout
 
@@ -101,6 +105,6 @@ The backend currently supports these environment variables:
 
 ## Notes
 
-- The current implementation is intentionally narrow: one backend route and one client view, validated end to end.
+- The current implementation is still intentionally narrow: directory browsing, UTF-8 text-file editing up to 1 MB, and one PTY-backed terminal view, validated end to end.
 - The broader product scope is tracked in `Instructions.md` and summarized in `docs/roadmap.md`.
 - Use pnpm only. Do not mix npm or yarn into this workspace.

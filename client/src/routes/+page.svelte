@@ -1,9 +1,26 @@
-<script lang="ts">
-	import { Folder, File, RefreshCw, HardDrive } from '@lucide/svelte';
+<svelte:options runes={false} />
 
+<script lang="ts">
+	import { onMount } from 'svelte';
+	import {
+		File,
+		FileCode2,
+		Folder,
+		HardDrive,
+		RefreshCw,
+		Save,
+		SquareTerminal
+	} from '@lucide/svelte';
+
+	import CodeEditor from '$lib/components/CodeEditor.svelte';
+	import Terminal from '$lib/components/Terminal.svelte';
 	import {
 		DirectoryRequestError,
+		FileContentRequestError,
 		getDirectoryListing,
+		getTextFileContent,
+		saveTextFileContent,
+		type FileContent,
 		type FileEntry
 	} from '$lib/api';
 
@@ -13,13 +30,22 @@
 		entries: FileEntry[];
 	};
 
-	let listing = $state<FileListingState>({
+	let listing: FileListingState = {
 		currentPath: '/',
 		parentPath: null,
 		entries: []
-	});
-	let isLoading = $state(true);
-	let errorMessage = $state('');
+	};
+	let isLoading = true;
+	let errorMessage = '';
+	let selectedFile: FileContent | null = null;
+	let selectedFilePath = '';
+	let editorValue = '';
+	let isLoadingFile = false;
+	let fileErrorMessage = '';
+	let isSaving = false;
+	let saveMessage = '';
+	let terminalCwd: string | undefined = undefined;
+	let terminalSessionKey = 0;
 
 	function formatBytes(value: number) {
 		if (value < 1024) {
@@ -36,6 +62,52 @@
 		}
 
 		return `${size.toFixed(size >= 10 ? 0 : 1)} ${units[index]}`;
+	}
+
+	function getLanguageFromPath(filePath: string) {
+		const normalizedPath = filePath.toLowerCase();
+
+		if (normalizedPath.endsWith('.ts') || normalizedPath.endsWith('.tsx')) {
+			return 'typescript';
+		}
+
+		if (normalizedPath.endsWith('.js') || normalizedPath.endsWith('.mjs') || normalizedPath.endsWith('.cjs')) {
+			return 'javascript';
+		}
+
+		if (normalizedPath.endsWith('.json')) {
+			return 'json';
+		}
+
+		if (normalizedPath.endsWith('.svelte')) {
+			return 'html';
+		}
+
+		if (normalizedPath.endsWith('.md')) {
+			return 'markdown';
+		}
+
+		if (normalizedPath.endsWith('.css')) {
+			return 'css';
+		}
+
+		if (normalizedPath.endsWith('.html')) {
+			return 'html';
+		}
+
+		if (normalizedPath.endsWith('.yml') || normalizedPath.endsWith('.yaml')) {
+			return 'yaml';
+		}
+
+		if (normalizedPath.endsWith('.xml')) {
+			return 'xml';
+		}
+
+		if (normalizedPath.endsWith('.sh') || normalizedPath.endsWith('.ps1')) {
+			return 'shell';
+		}
+
+		return 'plaintext';
 	}
 
 	async function loadDirectory(path = '/') {
@@ -56,7 +128,8 @@
 					errorMessage = 'Requested directory is unavailable. Returned to the root directory.';
 					return;
 				} catch (rootError) {
-					errorMessage = rootError instanceof Error ? rootError.message : 'Unable to load root directory';
+					errorMessage =
+						rootError instanceof Error ? rootError.message : 'Unable to load root directory';
 					return;
 				}
 			}
@@ -67,8 +140,72 @@
 		}
 	}
 
-	$effect(() => {
-		loadDirectory();
+	async function loadFile(path: string) {
+		selectedFilePath = path;
+		selectedFile = null;
+		isLoadingFile = true;
+		fileErrorMessage = '';
+		saveMessage = '';
+
+		try {
+			selectedFile = await getTextFileContent(path);
+			editorValue = selectedFile.content;
+		} catch (error) {
+			fileErrorMessage = error instanceof Error ? error.message : 'Unable to load file';
+		} finally {
+			isLoadingFile = false;
+		}
+	}
+
+	function handleEntryClick(entry: FileEntry) {
+		if (entry.type === 'directory') {
+			void loadDirectory(entry.path);
+			return;
+		}
+
+		void loadFile(entry.path);
+	}
+
+	function handleEditorChange(value: string) {
+		editorValue = value;
+		saveMessage = '';
+	}
+
+	async function saveFile() {
+		if (!selectedFile) {
+			return;
+		}
+
+		isSaving = true;
+		fileErrorMessage = '';
+
+		try {
+			const updatedFile = await saveTextFileContent(selectedFile.path, editorValue);
+			selectedFile = {
+				...selectedFile,
+				content: editorValue,
+				size: updatedFile.size,
+				modifiedAt: updatedFile.modifiedAt
+			};
+			saveMessage = 'Saved';
+			await loadDirectory(listing.currentPath);
+		} catch (error) {
+			fileErrorMessage = error instanceof Error ? error.message : 'Unable to save file';
+		} finally {
+			isSaving = false;
+		}
+	}
+
+	function openTerminalHere(path = listing.currentPath) {
+		terminalCwd = path === '/' ? undefined : path;
+		terminalSessionKey += 1;
+	}
+
+	$: isDirty = selectedFile ? editorValue !== selectedFile.content : false;
+
+	onMount(() => {
+		void loadDirectory();
+		openTerminalHere();
 	});
 </script>
 
@@ -76,7 +213,7 @@
 	<title>Node Explorer</title>
 	<meta
 		name="description"
-		content="Minimal first slice of the Node Explorer file manager backed by the new Fastify API."
+		content="Node Explorer now browses directories, opens UTF-8 text files for editing, and runs terminal sessions from the browser."
 	/>
 </svelte:head>
 
@@ -84,10 +221,10 @@
 	<section class="hero">
 		<div>
 			<p class="eyebrow">Node Explorer</p>
-			<h1>Server file browser</h1>
+			<h1>Browser, editor, terminal</h1>
 			<p class="intro">
-				This first implementation slice wires the Svelte client to a real backend directory listing.
-				The next slices can build auth, upload, terminal, and editing on top of this API shape.
+				Browse the server filesystem, open UTF-8 text files for live editing, and launch a real
+				PTY-backed terminal with shell completion directly from the current workspace.
 			</p>
 		</div>
 
@@ -97,70 +234,165 @@
 				<span>Current location</span>
 			</div>
 			<strong>{listing.currentPath}</strong>
-			<button type="button" class="refresh" onclick={() => loadDirectory(listing.currentPath)}>
-				<RefreshCw size={16} />
-				Refresh
-			</button>
+			<div class="hero-actions">
+				<button type="button" class="refresh" onclick={() => loadDirectory(listing.currentPath)}>
+					<RefreshCw size={16} />
+					Refresh
+				</button>
+				<button type="button" class="ghost" onclick={() => openTerminalHere(listing.currentPath)}>
+					<SquareTerminal size={16} />
+					Open terminal here
+				</button>
+			</div>
 		</div>
 	</section>
 
-	<section class="browser">
-		<header class="browser-header">
+	<div class="workspace-grid">
+		<section class="browser panel">
+			<header class="browser-header">
+				<div>
+					<p class="label">Path</p>
+					<h2>{listing.currentPath}</h2>
+				</div>
+				<div class="actions">
+					<button
+						type="button"
+						disabled={!listing.parentPath}
+						onclick={() => loadDirectory(listing.parentPath ?? '/')}
+					>
+						Up one level
+					</button>
+					<button type="button" class="ghost" onclick={() => loadDirectory('/')}>
+						Go to device root
+					</button>
+				</div>
+			</header>
+
+			{#if errorMessage}
+				<p class="error">{errorMessage}</p>
+			{:else if isLoading}
+				<p class="status">Loading directory contents...</p>
+			{:else if listing.entries.length === 0}
+				<p class="status">This directory is empty.</p>
+			{:else}
+				<div class="table">
+					<div class="table-head">
+						<span>Name</span>
+						<span>Type</span>
+						<span>Size</span>
+						<span>Modified</span>
+					</div>
+
+					{#each listing.entries as entry (entry.path)}
+						<button
+							type="button"
+							class:selected={entry.path === selectedFilePath}
+							class:directory={entry.type === 'directory'}
+							class="row"
+							onclick={() => handleEntryClick(entry)}
+						>
+							<span class="name-cell">
+								{#if entry.type === 'directory'}
+									<Folder size={18} />
+								{:else}
+									<File size={18} />
+								{/if}
+								<strong>{entry.name}</strong>
+							</span>
+							<span>{entry.type}</span>
+							<span>{entry.type === 'directory' ? '—' : formatBytes(entry.size)}</span>
+							<span>{new Date(entry.modifiedAt).toLocaleString()}</span>
+						</button>
+					{/each}
+				</div>
+			{/if}
+		</section>
+
+		<section class="editor-panel panel">
+			<header class="editor-header">
+				<div>
+					<p class="label">Editor</p>
+					<h2>{selectedFile?.name ?? 'Select a text file'}</h2>
+					{#if selectedFile}
+						<p class="meta">{selectedFile.path}</p>
+					{/if}
+				</div>
+				<div class="actions">
+					{#if selectedFile}
+						<button type="button" class="ghost" onclick={() => openTerminalHere(listing.currentPath)}>
+							<SquareTerminal size={16} />
+							Terminal in folder
+						</button>
+						<button type="button" disabled={!isDirty || isSaving} onclick={saveFile}>
+							<Save size={16} />
+							{isSaving ? 'Saving...' : isDirty ? 'Save changes' : 'Saved'}
+						</button>
+					{/if}
+				</div>
+			</header>
+
+			{#if fileErrorMessage}
+				<p class="error">{fileErrorMessage}</p>
+			{:else if isLoadingFile}
+				<p class="status">Loading file contents...</p>
+			{:else if selectedFile}
+				<div class="editor-body">
+					<div class="editor-stats">
+						<div class="stat-pill">
+							<FileCode2 size={16} />
+							<span>{getLanguageFromPath(selectedFile.path)}</span>
+						</div>
+						<div class="stat-pill">
+							<span>{formatBytes(selectedFile.size)}</span>
+						</div>
+						<div class="stat-pill">
+							<span>{new Date(selectedFile.modifiedAt).toLocaleString()}</span>
+						</div>
+						{#if saveMessage}
+							<div class="stat-pill success-pill">
+								<span>{saveMessage}</span>
+							</div>
+						{/if}
+					</div>
+					<div class="editor-frame">
+						<CodeEditor
+							value={editorValue}
+							language={getLanguageFromPath(selectedFile.path)}
+							onChange={handleEditorChange}
+						/>
+					</div>
+				</div>
+			{:else}
+				<div class="empty-state">
+					<FileCode2 size={28} />
+					<h3>Open a text file to inspect or edit it</h3>
+					<p>
+						The backend currently supports UTF-8 text files up to 1 MB for safe browser-based
+						preview and save.
+					</p>
+				</div>
+			{/if}
+		</section>
+	</div>
+
+	<section class="terminal-panel panel">
+		<header class="terminal-header">
 			<div>
-				<p class="label">Path</p>
-				<h2>{listing.currentPath}</h2>
+				<p class="label">Terminal</p>
+				<h2>Interactive shell</h2>
+				<p class="meta">Tab completion comes from the shell running inside the server PTY.</p>
 			</div>
 			<div class="actions">
-				<button
-					type="button"
-					disabled={!listing.parentPath}
-					onclick={() => loadDirectory(listing.parentPath ?? '/')}
-				>
-					Up one level
-				</button>
-				<button type="button" class="ghost" onclick={() => loadDirectory('/')}>
-					Go to device root
+				<button type="button" class="ghost" onclick={() => openTerminalHere(listing.currentPath)}>
+					<SquareTerminal size={16} />
+					Reconnect here
 				</button>
 			</div>
 		</header>
 
-		{#if errorMessage}
-			<p class="error">{errorMessage}</p>
-		{:else if isLoading}
-			<p class="status">Loading directory contents...</p>
-		{:else if listing.entries.length === 0}
-			<p class="status">This directory is empty.</p>
-		{:else}
-			<div class="table">
-				<div class="table-head">
-					<span>Name</span>
-					<span>Type</span>
-					<span>Size</span>
-					<span>Modified</span>
-				</div>
-
-				{#each listing.entries as entry (entry.path)}
-					<button
-						type="button"
-						class:directory={entry.type === 'directory'}
-						class="row"
-						onclick={() => entry.type === 'directory' && loadDirectory(entry.path)}
-					>
-						<span class="name-cell">
-							{#if entry.type === 'directory'}
-								<Folder size={18} />
-							{:else}
-								<File size={18} />
-							{/if}
-							<strong>{entry.name}</strong>
-						</span>
-						<span>{entry.type}</span>
-						<span>{entry.type === 'directory' ? '—' : formatBytes(entry.size)}</span>
-						<span>{new Date(entry.modifiedAt).toLocaleString()}</span>
-					</button>
-				{/each}
-			</div>
-		{/if}
+		{#key terminalSessionKey}
+			<Terminal cwd={terminalCwd} />
+		{/key}
 	</section>
 </div>
 
@@ -230,6 +462,12 @@
 		padding: 20px;
 	}
 
+	.hero-actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 10px;
+	}
+
 	.stat {
 		display: flex;
 		align-items: center;
@@ -244,8 +482,15 @@
 		margin-bottom: 18px;
 	}
 
-	.browser {
+	.panel {
 		padding: 24px;
+	}
+
+	.workspace-grid {
+		display: grid;
+		grid-template-columns: minmax(320px, 0.95fr) minmax(0, 1.35fr);
+		gap: 24px;
+		margin-bottom: 24px;
 	}
 
 	.browser-header {
@@ -274,6 +519,11 @@
 		cursor: pointer;
 	}
 
+	button:disabled {
+		opacity: 0.55;
+		cursor: not-allowed;
+	}
+
 	button.ghost {
 		background: rgba(131, 163, 224, 0.12);
 		color: #d9e6ff;
@@ -288,7 +538,7 @@
 	.table-head,
 	.row {
 		display: grid;
-		grid-template-columns: minmax(0, 2fr) 120px 120px 200px;
+		grid-template-columns: minmax(0, 2fr) 110px 110px 180px;
 		gap: 12px;
 		align-items: center;
 	}
@@ -298,16 +548,162 @@
 		font-size: 0.8rem;
 		text-transform: uppercase;
 		letter-spacing: 0.08em;
-		color: #88a3d8;
+		color: #97aed6;
 	}
 
 	.row {
 		width: 100%;
+		padding: 14px 16px;
 		text-align: left;
-		padding: 16px;
 		border-radius: 18px;
-		background: rgba(20, 34, 57, 0.86);
+		background: rgba(12, 24, 42, 0.58);
+		border: 1px solid rgba(147, 178, 255, 0.1);
 		color: #eff5ff;
+	}
+
+	.row:hover,
+	.row.selected {
+		border-color: rgba(159, 211, 255, 0.35);
+		background: rgba(18, 34, 58, 0.85);
+	}
+
+	.name-cell {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		min-width: 0;
+	}
+
+	.name-cell strong {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.editor-header,
+	.terminal-header {
+		display: flex;
+		justify-content: space-between;
+		gap: 18px;
+		align-items: flex-start;
+		margin-bottom: 18px;
+	}
+
+	.meta {
+		margin-top: 8px;
+		font-size: 0.92rem;
+		line-height: 1.5;
+		color: #bfd0f5;
+		word-break: break-all;
+	}
+
+	.editor-body {
+		display: grid;
+		gap: 14px;
+		height: calc(100% - 84px);
+	}
+
+	.editor-frame {
+		border-radius: 20px;
+		overflow: hidden;
+		border: 1px solid rgba(147, 178, 255, 0.14);
+		background: #07111f;
+	}
+
+	.editor-panel {
+		min-height: 620px;
+	}
+
+	.editor-stats {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 10px;
+	}
+
+	.stat-pill {
+		display: inline-flex;
+		align-items: center;
+		gap: 8px;
+		padding: 8px 12px;
+		border-radius: 999px;
+		background: rgba(131, 163, 224, 0.12);
+		border: 1px solid rgba(147, 178, 255, 0.14);
+		color: #d9e6ff;
+		font-size: 0.9rem;
+	}
+
+	.success-pill {
+		border-color: rgba(111, 226, 176, 0.24);
+		background: rgba(29, 74, 56, 0.55);
+	}
+
+	.empty-state {
+		display: grid;
+		place-items: center;
+		align-content: center;
+		gap: 12px;
+		min-height: 460px;
+		text-align: center;
+		color: #bfd0f5;
+	}
+
+	.empty-state h3 {
+		margin: 0;
+		font-size: 1.35rem;
+		color: #eff5ff;
+	}
+
+	.terminal-panel {
+		margin-top: 0;
+	}
+
+	.status,
+	.error {
+		padding: 16px 0;
+	}
+
+	.error {
+		color: #ffb4b4;
+	}
+
+	@media (max-width: 1080px) {
+		.workspace-grid {
+			grid-template-columns: 1fr;
+		}
+
+		.editor-panel {
+			min-height: 560px;
+		}
+	}
+
+	@media (max-width: 760px) {
+		.shell {
+			padding: 32px 16px 56px;
+		}
+
+		.hero {
+			grid-template-columns: 1fr;
+		}
+
+		.browser-header,
+		.editor-header,
+		.terminal-header {
+			flex-direction: column;
+		}
+
+		.table-head {
+			display: none;
+		}
+
+		.row {
+			grid-template-columns: 1fr;
+			gap: 6px;
+		}
+
+		.row span:not(.name-cell) {
+			font-size: 0.92rem;
+			color: #bfd0f5;
+		}
 	}
 
 	.row.directory {

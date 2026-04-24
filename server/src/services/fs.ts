@@ -25,6 +25,17 @@ export type FileListing = {
 	entries: FileEntry[];
 };
 
+export type FileContent = {
+	path: string;
+	name: string;
+	content: string;
+	encoding: 'utf8';
+	size: number;
+	modifiedAt: string;
+};
+
+const MAX_TEXT_FILE_BYTES = 1024 * 1024;
+
 function toPosixPath(value: string) {
 	return value.split(path.sep).join('/');
 }
@@ -85,6 +96,16 @@ function formatApiPath(absolutePath: string) {
 	return process.platform === 'win32' ? absolutePath.replaceAll('\\', '/') : absolutePath;
 }
 
+function normalizeRequiredAbsolutePath(requestedPath?: string) {
+	const absolutePath = normalizeAbsolutePath(requestedPath);
+
+	if (!absolutePath) {
+		throw new FileServiceError('Requested path must be an absolute path', 400);
+	}
+
+	return absolutePath;
+}
+
 function getParentPath(currentPath: string) {
 	if (currentPath === '/') {
 		return null;
@@ -128,6 +149,24 @@ async function statDirectory(absolutePath: string) {
 	}
 }
 
+async function statPath(absolutePath: string) {
+	try {
+		return await fs.stat(absolutePath);
+	} catch (error) {
+		if (typeof error === 'object' && error && 'code' in error) {
+			if (error.code === 'ENOENT') {
+				throw new FileServiceError('Requested path does not exist', 404);
+			}
+
+			if (error.code === 'EACCES' || error.code === 'EPERM') {
+				throw new FileServiceError('Permission denied for requested path', 403);
+			}
+		}
+
+		throw error;
+	}
+}
+
 async function readDirectoryEntries(absolutePath: string) {
 	try {
 		return await fs.readdir(absolutePath, { withFileTypes: true });
@@ -139,6 +178,18 @@ async function readDirectoryEntries(absolutePath: string) {
 		}
 
 		throw error;
+	}
+}
+
+function ensureFile(stats: Awaited<ReturnType<typeof statPath>>) {
+	if (!stats.isFile()) {
+		throw new FileServiceError('Requested path is not a file', 400);
+	}
+}
+
+function ensureTextFile(buffer: Buffer) {
+	if (buffer.includes(0)) {
+		throw new FileServiceError('Requested file is not a UTF-8 text file', 415);
 	}
 }
 
@@ -197,5 +248,73 @@ export async function listDirectory(requestedPath?: string): Promise<FileListing
 		currentPath: formatApiPath(absolutePath),
 		parentPath: getParentPath(formatApiPath(absolutePath)),
 		entries
+	};
+}
+
+export async function readTextFile(requestedPath: string): Promise<FileContent> {
+	const absolutePath = normalizeRequiredAbsolutePath(requestedPath);
+	const stats = await statPath(absolutePath);
+
+	ensureFile(stats);
+
+	if (stats.size > MAX_TEXT_FILE_BYTES) {
+		throw new FileServiceError('Requested file exceeds the 1 MB text preview limit', 413);
+	}
+
+	let buffer: Buffer;
+
+	try {
+		buffer = await fs.readFile(absolutePath);
+	} catch (error) {
+		if (typeof error === 'object' && error && 'code' in error) {
+			if (error.code === 'EACCES' || error.code === 'EPERM') {
+				throw new FileServiceError('Permission denied for requested path', 403);
+			}
+		}
+
+		throw error;
+	}
+
+	ensureTextFile(buffer);
+
+	return {
+		path: formatApiPath(absolutePath),
+		name: path.basename(absolutePath),
+		content: buffer.toString('utf8'),
+		encoding: 'utf8',
+		size: stats.size,
+		modifiedAt: stats.mtime.toISOString()
+	};
+}
+
+export async function writeTextFile(requestedPath: string, content: string) {
+	const absolutePath = normalizeRequiredAbsolutePath(requestedPath);
+	const stats = await statPath(absolutePath);
+
+	ensureFile(stats);
+
+	if (Buffer.byteLength(content, 'utf8') > MAX_TEXT_FILE_BYTES) {
+		throw new FileServiceError('Updated file exceeds the 1 MB text save limit', 413);
+	}
+
+	try {
+		await fs.writeFile(absolutePath, content, 'utf8');
+	} catch (error) {
+		if (typeof error === 'object' && error && 'code' in error) {
+			if (error.code === 'EACCES' || error.code === 'EPERM') {
+				throw new FileServiceError('Permission denied for requested path', 403);
+			}
+		}
+
+		throw error;
+	}
+
+	const updatedStats = await statPath(absolutePath);
+
+	return {
+		path: formatApiPath(absolutePath),
+		name: path.basename(absolutePath),
+		size: updatedStats.size,
+		modifiedAt: updatedStats.mtime.toISOString()
 	};
 }
