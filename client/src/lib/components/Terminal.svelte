@@ -13,6 +13,7 @@
 
 	let container: HTMLDivElement;
 	let status = 'Connecting';
+	let shellName = 'pending';
 	let connectedCwd = cwd ?? 'server default';
 	let errorMessage = '';
 
@@ -92,6 +93,7 @@
 
 				if (message.type === 'ready') {
 					connectedCwd = typeof message.cwd === 'string' ? message.cwd : connectedCwd;
+					shellName = typeof message.shell === 'string' ? message.shell : shellName;
 					return;
 				}
 
@@ -141,6 +143,10 @@
 			<strong>{status}</strong>
 		</div>
 		<div>
+			<p class="label">Shell</p>
+			<strong>{shellName}</strong>
+		</div>
+		<div>
 			<p class="label">Working directory</p>
 			<strong>{connectedCwd}</strong>
 		</div>
@@ -159,7 +165,7 @@
 
 	.terminal-meta {
 		display: grid;
-		grid-template-columns: repeat(2, minmax(0, 1fr));
+		grid-template-columns: repeat(3, minmax(0, 1fr));
 		gap: 16px;
 	}
 
@@ -172,9 +178,13 @@
 	}
 
 	strong {
+		display: block;
 		font-size: 0.95rem;
 		font-weight: 650;
 		color: #eff5ff;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 
 	.terminal {

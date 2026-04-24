@@ -37,8 +37,8 @@ function normalizeDirectoryPath(requestedPath?: string) {
 function getShellCommand() {
 	if (process.platform === 'win32') {
 		return {
-			command: 'powershell.exe',
-			args: ['-NoLogo']
+			command: 'cmd.exe',
+			args: ['/q']
 		};
 	}
 

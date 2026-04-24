@@ -140,13 +140,13 @@ Query parameters:
 Behavior notes:
 
 - Each websocket connection gets its own PTY session
-- On Windows, the server currently starts `powershell.exe -NoLogo`
+- On Windows, the server currently starts `cmd.exe /q`
 - Shell completion comes from the shell running inside the PTY, not from a separate API
 
 Server-to-client messages:
 
 ```json
-{ "type": "ready", "cwd": "D:/node/node_explorer", "shell": "powershell.exe" }
+{ "type": "ready", "cwd": "D:/node/node_explorer", "shell": "cmd.exe" }
 { "type": "output", "data": "PS D:\\node\\node_explorer> " }
 { "type": "exit", "exitCode": 0, "signal": 0 }
 { "type": "error", "error": "Requested terminal path is not a directory" }
