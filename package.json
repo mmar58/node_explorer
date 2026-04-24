@@ -1,0 +1,16 @@
+{
+  "name": "node_explorer",
+  "version": "1.0.0",
+  "description": "",
+  "private": true,
+  "scripts": {
+    "client": "pnpm --dir client dev",
+    "server": "pnpm --dir server dev",
+    "check:client": "pnpm --dir client check",
+    "check:server": "pnpm --dir server typecheck"
+  },
+  "keywords": ["server", "explorer", "node", "file system","file explorer","file manager","command line","terminal"],
+  "author": "mmar58",
+  "license": "ISC",
+  "packageManager": "pnpm@10.28.2"
+}
