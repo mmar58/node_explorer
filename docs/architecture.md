@@ -16,10 +16,11 @@ The system is intended to grow in thin vertical slices rather than large isolate
 The client currently has:
 
 - A top-level Svelte layout
-- A home page that combines directory browsing, a text editor workspace, and an embedded terminal
+- A home page that combines directory browsing, editor tabs, popup previews, context menus, uploads/downloads, and an embedded terminal
 - A small typed API wrapper in `client/src/lib/api.ts`
 - A Monaco-based code editor component for UTF-8 text files
 - An xterm.js terminal component connected to the backend websocket
+- Popup preview and context-menu components for file-type-specific actions
 
 ### Server
 
@@ -28,12 +29,14 @@ The server currently has:
 - `src/index.ts`: app bootstrap and route registration
 - `src/config.ts`: runtime host and port configuration
 - `src/routes/health.ts`: liveness endpoint
-- `src/routes/files.ts`: directory listing plus text-file read and save endpoints
+- `src/routes/files.ts`: directory listing plus preview, upload, download, archive, and text-file edit endpoints
 - `src/routes/terminal.ts`: websocket route for terminal sessions
-- `src/services/fs.ts`: host-filesystem directory reads, Windows drive discovery, parent-path calculation, and text-file read/write helpers
+- `src/services/fs.ts`: host-filesystem directory reads, Windows drive discovery, parent-path calculation, upload-path validation, archive inspection, and text-file read/write helpers
 - `src/services/terminal.ts`: PTY session setup and working-directory validation
 
 The current files API exposes the host filesystem. On Windows, the API uses a virtual `/` that lists available drive roots and then navigates using absolute paths such as `C:/Users`.
+
+The current browser slice routes file opening by type on the client: known text/code files open in Monaco tabs, images/video/audio/PDFs open through the streamed blob endpoint, and zip files use an archive-inspection endpoint for inline previews.
 
 The terminal slice currently uses `@fastify/websocket` and `node-pty` directly. Each websocket connection creates one PTY process, streams output back to the browser, and accepts input and resize events from the client.
 

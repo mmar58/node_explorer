@@ -1,6 +1,8 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
+import AdmZip from 'adm-zip';
+
 export class FileServiceError extends Error {
 	constructor(
 		message: string,
@@ -17,6 +19,7 @@ export type FileEntry = {
 	type: 'file' | 'directory';
 	size: number;
 	modifiedAt: string;
+	isAccessible: boolean;
 };
 
 export type FileListing = {
@@ -32,6 +35,21 @@ export type FileContent = {
 	encoding: 'utf8';
 	size: number;
 	modifiedAt: string;
+};
+
+export type FileStreamTarget = {
+	absolutePath: string;
+	path: string;
+	name: string;
+	size: number;
+	modifiedAt: string;
+};
+
+export type ArchiveEntry = {
+	path: string;
+	type: 'file' | 'directory';
+	size: number;
+	compressedSize: number;
 };
 
 const MAX_TEXT_FILE_BYTES = 1024 * 1024;
@@ -84,7 +102,8 @@ async function listWindowsDrives() {
 			path: toPosixPath(drivePath),
 			type: 'directory',
 			size: 0,
-			modifiedAt: new Date(0).toISOString()
+			modifiedAt: new Date(0).toISOString(),
+			isAccessible: true
 		}) satisfies FileEntry);
 }
 
@@ -193,6 +212,66 @@ function ensureTextFile(buffer: Buffer) {
 	}
 }
 
+function isPermissionError(error: unknown) {
+	return typeof error === 'object' && error !== null && 'code' in error && (error.code === 'EACCES' || error.code === 'EPERM');
+}
+
+function normalizeUploadRelativePath(relativePath: string) {
+	const normalized = path.posix.normalize(relativePath.replaceAll('\\', '/'));
+
+	if (!normalized || normalized === '.' || normalized.startsWith('../') || normalized.includes('/../')) {
+		throw new FileServiceError('Upload path must stay within the selected destination folder', 400);
+	}
+
+	if (path.posix.isAbsolute(normalized)) {
+		throw new FileServiceError('Upload path must be relative', 400);
+	}
+
+	return normalized;
+}
+
+async function ensureDirectory(absolutePath: string) {
+	const stats = await statDirectory(absolutePath);
+
+	if (!stats.isDirectory()) {
+		throw new FileServiceError('Requested path is not a directory', 400);
+	}
+
+	return absolutePath;
+}
+
+async function statChildEntry(childAbsolutePath: string, child: Awaited<ReturnType<typeof readDirectoryEntries>>[number]) {
+	try {
+		const childStats = await fs.stat(childAbsolutePath);
+
+		return {
+			name: child.name,
+			path: formatApiPath(childAbsolutePath),
+			type: child.isDirectory() ? 'directory' : 'file',
+			size: childStats.size,
+			modifiedAt: childStats.mtime.toISOString(),
+			isAccessible: true
+		} satisfies FileEntry;
+	} catch (error) {
+		if (isPermissionError(error)) {
+			return {
+				name: child.name,
+				path: formatApiPath(childAbsolutePath),
+				type: child.isDirectory() ? 'directory' : 'file',
+				size: 0,
+				modifiedAt: new Date(0).toISOString(),
+				isAccessible: false
+			} satisfies FileEntry;
+		}
+
+		if (typeof error === 'object' && error && 'code' in error && error.code === 'ENOENT') {
+			return null;
+		}
+
+		throw error;
+	}
+}
+
 
 export async function listDirectory(requestedPath?: string): Promise<FileListing> {
 	if (!requestedPath || requestedPath === '/') {
@@ -224,19 +303,13 @@ export async function listDirectory(requestedPath?: string): Promise<FileListing
 	const entries = await Promise.all(
 		children.map(async (child) => {
 			const childAbsolutePath = pathModule.join(absolutePath, child.name);
-			const childStats = await fs.stat(childAbsolutePath);
-
-			return {
-				name: child.name,
-				path: formatApiPath(childAbsolutePath),
-				type: child.isDirectory() ? 'directory' : 'file',
-				size: childStats.size,
-				modifiedAt: childStats.mtime.toISOString()
-			} satisfies FileEntry;
+			return await statChildEntry(childAbsolutePath, child);
 		})
 	);
 
-	entries.sort((left, right) => {
+	const visibleEntries = entries.filter((entry): entry is FileEntry => entry !== null);
+
+	visibleEntries.sort((left, right) => {
 		if (left.type !== right.type) {
 			return left.type === 'directory' ? -1 : 1;
 		}
@@ -247,7 +320,7 @@ export async function listDirectory(requestedPath?: string): Promise<FileListing
 	return {
 		currentPath: formatApiPath(absolutePath),
 		parentPath: getParentPath(formatApiPath(absolutePath)),
-		entries
+		entries: visibleEntries
 	};
 }
 
@@ -316,5 +389,88 @@ export async function writeTextFile(requestedPath: string, content: string) {
 		name: path.basename(absolutePath),
 		size: updatedStats.size,
 		modifiedAt: updatedStats.mtime.toISOString()
+	};
+}
+
+export async function getFileStreamTarget(requestedPath: string): Promise<FileStreamTarget> {
+	const absolutePath = normalizeRequiredAbsolutePath(requestedPath);
+	const stats = await statPath(absolutePath);
+
+	ensureFile(stats);
+
+	return {
+		absolutePath,
+		path: formatApiPath(absolutePath),
+		name: path.basename(absolutePath),
+		size: stats.size,
+		modifiedAt: stats.mtime.toISOString()
+	};
+}
+
+export async function getDownloadTarget(requestedPath: string) {
+	const absolutePath = normalizeRequiredAbsolutePath(requestedPath);
+	const stats = await statPath(absolutePath);
+
+	return {
+		absolutePath,
+		path: formatApiPath(absolutePath),
+		name: path.basename(absolutePath) || formatApiPath(absolutePath).replace(/[:/\\]+/g, '_'),
+		isDirectory: stats.isDirectory(),
+		size: stats.size,
+		modifiedAt: stats.mtime.toISOString()
+	};
+}
+
+export async function getArchivePreview(requestedPath: string) {
+	const target = await getFileStreamTarget(requestedPath);
+
+	if (!target.name.toLowerCase().endsWith('.zip')) {
+		throw new FileServiceError('Requested file is not a zip archive', 400);
+	}
+
+	let zip: AdmZip;
+
+	try {
+		zip = new AdmZip(target.absolutePath);
+	} catch {
+		throw new FileServiceError('Unable to open zip archive', 400);
+	}
+
+	const entries = zip
+		.getEntries()
+		.map((entry: AdmZip.IZipEntry) => ({
+			path: entry.entryName,
+			type: entry.isDirectory ? 'directory' : 'file',
+			size: entry.header.size,
+			compressedSize: entry.header.compressedSize
+		}) satisfies ArchiveEntry);
+
+	return {
+		path: target.path,
+		name: target.name,
+		entries
+	};
+}
+
+export async function resolveUploadDestination(requestedDirectoryPath: string, relativeFilePath: string) {
+	const destinationDirectory = await ensureDirectory(normalizeRequiredAbsolutePath(requestedDirectoryPath));
+	const normalizedRelativePath = normalizeUploadRelativePath(relativeFilePath);
+	const pathModule = getPathModule();
+	const absoluteDestinationPath = pathModule.join(
+		destinationDirectory,
+		...normalizedRelativePath.split('/').filter(Boolean)
+	);
+	const relativeToDestination = pathModule.relative(destinationDirectory, absoluteDestinationPath);
+
+	if (relativeToDestination.startsWith('..') || pathModule.isAbsolute(relativeToDestination)) {
+		throw new FileServiceError('Upload path must stay within the selected destination folder', 400);
+	}
+
+	await fs.mkdir(pathModule.dirname(absoluteDestinationPath), { recursive: true });
+
+	return {
+		absolutePath: absoluteDestinationPath,
+		path: formatApiPath(absoluteDestinationPath),
+		name: path.basename(absoluteDestinationPath)
 	};
 }

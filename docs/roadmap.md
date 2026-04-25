@@ -8,8 +8,9 @@ Completed:
 - Health endpoint
 - Safe directory listing endpoint
 - Text-file read and save endpoints for UTF-8 files up to 1 MB
+- Blob preview, upload, download, and zip-inspection endpoints
 - PTY-backed terminal websocket endpoint
-- Client workspace page with browser, editor, and terminal panels
+- Client workspace page with browser, editor tabs, media/archive previews, context menus, upload/download actions, and terminal panels
 - Root workspace scripts for running and checking both apps
 
 In progress direction:
@@ -20,11 +21,9 @@ Not started yet:
 
 - Auth and permissions
 - File mutations
-- Upload and download workflows
 - Remote fetch from URL with resume support
-- Media preview
 - Admin tools
-- Archive operations
+- Archive extraction and broader archive operations
 
 ## Recommended Build Order
 
@@ -69,7 +68,7 @@ Goal:
 
 Current state:
 
-- Not started
+- In progress: direct upload and download are implemented; resumable transfers and remote fetch are not started
 
 ### Milestone 4: Interactive Tools
 
@@ -79,7 +78,7 @@ Goal:
 
 Current state:
 
-- In progress: terminal and text editing are implemented; media preview is not started
+- In progress: terminal, editor tabs, media preview, and zip preview are implemented; broader file actions are still not started
 
 ### Milestone 5: Admin and Policy
 

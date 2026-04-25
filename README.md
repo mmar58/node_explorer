@@ -6,8 +6,8 @@ The repository currently contains the first end-to-end slice:
 
 - A Svelte client in `client/`
 - A Fastify server in `server/`
-- Working filesystem browsing plus UTF-8 text-file read and save endpoints
-- A browser workspace UI with file browsing, code editing, and an embedded terminal
+- Working filesystem browsing plus file preview, upload, download, and UTF-8 text-file edit endpoints
+- A browser workspace UI with typed opening, editor tabs, popup previews, context menus, and an embedded terminal
 
 ## Current Status
 
@@ -18,17 +18,21 @@ Implemented now:
 - `GET /api/files?path=/...`
 - `GET /api/files/content?path=/...`
 - `PUT /api/files/content`
+- `GET /api/files/blob?path=/...`
+- `GET /api/files/download?path=/...`
+- `GET /api/files/archive?path=/...`
+- `POST /api/files/upload?path=/...`
 - `GET /api/terminal/socket` websocket endpoint backed by a PTY
 - Absolute-path browsing across the serving machine
 - Windows drive listing at `/` with parent-path aware navigation
-- Browser UI on the client home page with directory navigation, text editing, and terminal access
+- Browser UI on the client home page with directory navigation, editor tabs, media/archive previews, upload/download actions, and terminal access
 
 Planned next:
 
 - Auth and permissions
 - File actions: stat, mkdir, rename, move, copy, delete
-- Upload, download, and resumable remote fetch from URL
-- Media preview, admin panel, archive operations, and richer permission-aware terminal/editor workflows
+- Resumable remote fetch from URL
+- Admin panel, archive extraction, richer permission-aware file actions, and terminal/editor workflows
 
 ## Tech Stack
 
@@ -105,6 +109,6 @@ The backend currently supports these environment variables:
 
 ## Notes
 
-- The current implementation is still intentionally narrow: directory browsing, UTF-8 text-file editing up to 1 MB, and one PTY-backed terminal view, validated end to end.
+- The current implementation is still intentionally narrow: browsing, typed previews, upload/download, UTF-8 text-file editing up to 1 MB, and one PTY-backed terminal view, validated end to end.
 - The broader product scope is tracked in `Instructions.md` and summarized in `docs/roadmap.md`.
 - Use pnpm only. Do not mix npm or yarn into this workspace.

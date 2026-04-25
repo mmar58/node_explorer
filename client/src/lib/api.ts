@@ -6,6 +6,7 @@ export type FileEntry = {
 	type: 'file' | 'directory';
 	size: number;
 	modifiedAt: string;
+	isAccessible: boolean;
 };
 
 export type FileListing = {
@@ -28,6 +29,24 @@ export type SavedFileContent = {
 	name: string;
 	size: number;
 	modifiedAt: string;
+};
+
+export type ArchiveEntry = {
+	path: string;
+	type: 'file' | 'directory';
+	size: number;
+	compressedSize: number;
+};
+
+export type ArchivePreview = {
+	path: string;
+	name: string;
+	entries: ArchiveEntry[];
+};
+
+export type UploadItem = {
+	file: File;
+	relativePath: string;
 };
 
 export class DirectoryRequestError extends Error {
@@ -66,6 +85,11 @@ export class FileContentRequestError extends Error {
 	}
 }
 
+async function throwApiError(response: Response, fallbackMessage: string): Promise<never> {
+	const payload = (await response.json().catch(() => null)) as { error?: string } | null;
+	throw new FileContentRequestError(payload?.error ?? fallbackMessage, response.status);
+}
+
 export async function getTextFileContent(requestedPath: string) {
 	const url = new URL('/api/files/content', apiBaseUrl);
 	url.searchParams.set('path', requestedPath);
@@ -73,8 +97,7 @@ export async function getTextFileContent(requestedPath: string) {
 	const response = await fetch(url);
 
 	if (!response.ok) {
-		const payload = (await response.json().catch(() => null)) as { error?: string } | null;
-		throw new FileContentRequestError(payload?.error ?? 'Unable to read file', response.status);
+		await throwApiError(response, 'Unable to read file');
 	}
 
 	return (await response.json()) as FileContent;
@@ -91,11 +114,57 @@ export async function saveTextFileContent(requestedPath: string, content: string
 	});
 
 	if (!response.ok) {
-		const payload = (await response.json().catch(() => null)) as { error?: string } | null;
-		throw new FileContentRequestError(payload?.error ?? 'Unable to save file', response.status);
+		await throwApiError(response, 'Unable to save file');
 	}
 
 	return (await response.json()) as SavedFileContent;
+}
+
+export async function getArchivePreview(requestedPath: string) {
+	const url = new URL('/api/files/archive', apiBaseUrl);
+	url.searchParams.set('path', requestedPath);
+
+	const response = await fetch(url);
+
+	if (!response.ok) {
+		await throwApiError(response, 'Unable to inspect archive');
+	}
+
+	return (await response.json()) as ArchivePreview;
+}
+
+export async function uploadFilesToDirectory(destinationPath: string, items: UploadItem[]) {
+	const url = new URL('/api/files/upload', apiBaseUrl);
+	url.searchParams.set('path', destinationPath);
+
+	const formData = new FormData();
+
+	for (const item of items) {
+		formData.append('files', item.file, item.relativePath);
+	}
+
+	const response = await fetch(url, {
+		method: 'POST',
+		body: formData
+	});
+
+	if (!response.ok) {
+		await throwApiError(response, 'Unable to upload files');
+	}
+
+	return (await response.json()) as { uploaded: Array<{ path: string; name: string }> };
+}
+
+export function getFileBlobUrl(requestedPath: string) {
+	const url = new URL('/api/files/blob', apiBaseUrl);
+	url.searchParams.set('path', requestedPath);
+	return url.toString();
+}
+
+export function getDownloadUrl(requestedPath: string) {
+	const url = new URL('/api/files/download', apiBaseUrl);
+	url.searchParams.set('path', requestedPath);
+	return url.toString();
 }
 
 export function getTerminalSocketUrl(options: { cwd?: string }) {

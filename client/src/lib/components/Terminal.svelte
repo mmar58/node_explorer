@@ -10,6 +10,7 @@
 	type FitAddon = import('@xterm/addon-fit').FitAddon;
 
 	export let cwd: string | undefined = undefined;
+	export let onError: (message: string) => void = () => {};
 
 	let container: HTMLDivElement;
 	let status = 'Connecting';
@@ -105,6 +106,7 @@
 				if (message.type === 'error' && typeof message.error === 'string') {
 					errorMessage = message.error;
 					status = 'Disconnected';
+					onError(message.error);
 					return;
 				}
 
@@ -122,6 +124,7 @@
 			socket.addEventListener('error', () => {
 				errorMessage = 'Terminal connection failed';
 				status = 'Disconnected';
+				onError(errorMessage);
 			});
 		};
 
@@ -152,9 +155,6 @@
 		</div>
 	</div>
 	<div bind:this={container} class="terminal"></div>
-	{#if errorMessage}
-		<p class="error">{errorMessage}</p>
-	{/if}
 </div>
 
 <style>
@@ -193,11 +193,6 @@
 		padding: 14px;
 		background: #07111f;
 		overflow: hidden;
-	}
-
-	.error {
-		margin: 0;
-		color: #ffb4b4;
 	}
 
 	@media (max-width: 720px) {

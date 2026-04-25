@@ -40,7 +40,8 @@ Success response:
       "path": "C:/",
       "type": "directory",
       "size": 0,
-      "modifiedAt": "1970-01-01T00:00:00.000Z"
+      "modifiedAt": "1970-01-01T00:00:00.000Z",
+      "isAccessible": true
     }
   ]
 }
@@ -53,6 +54,10 @@ Error behavior:
 - Returns `403` when the process lacks permission to read the directory
 - Returns `404` when the requested path does not exist
 - Returns `500` for other unexpected failures
+
+Behavior detail:
+
+- Child entries that cannot be `stat`ed due to permission errors are still listed with `isAccessible: false` instead of aborting the whole directory response
 
 ### `GET /api/files/content?path=/...`
 
@@ -89,6 +94,62 @@ Error behavior:
 - Returns `413` when the file exceeds the 1 MB text preview limit
 - Returns `415` when the file is not treated as UTF-8 text
 - Returns `500` for other unexpected failures
+
+### `GET /api/files/blob?path=/...`
+
+Streams a single file for inline preview.
+
+Behavior notes:
+
+- Supports `Range` requests for media playback and seeking
+- Returns an inline `Content-Disposition` header
+- Intended for images, video, audio, PDFs, and other browser previews
+
+Error behavior:
+
+- Returns `400` for invalid or non-file paths
+- Returns `403` when the process lacks permission to read the file
+- Returns `404` when the requested path does not exist
+- Returns `416` for invalid byte-range requests
+
+### `GET /api/files/download?path=/...`
+
+Downloads a file directly or downloads a directory as a generated zip archive.
+
+Behavior notes:
+
+- Files are streamed with an attachment disposition
+- Directories are zipped on demand in the response stream
+
+### `GET /api/files/archive?path=/...`
+
+Lists the entries inside a zip archive.
+
+Success response:
+
+```json
+{
+  "path": "D:/node/node_explorer/archive.zip",
+  "name": "archive.zip",
+  "entries": [
+    {
+      "path": "folder/readme.txt",
+      "type": "file",
+      "size": 120,
+      "compressedSize": 78
+    }
+  ]
+}
+```
+
+### `POST /api/files/upload?path=/...`
+
+Uploads one or more files into the requested destination directory using multipart form data.
+
+Behavior notes:
+
+- Folder uploads are supported by sending relative file names such as `photos/2026/a.jpg`
+- The server rejects relative paths that escape the requested destination directory
 
 ### `PUT /api/files/content`
 
@@ -179,10 +240,8 @@ These are part of the intended product design but are not implemented yet.
 
 ### Transfer
 
-- `POST /api/upload`
 - `PATCH /api/upload/tus/:id`
 - `HEAD /api/upload/tus/:id`
-- `GET /api/download`
 - `POST /api/download/link`
 - `GET /api/download/link/:token`
 
