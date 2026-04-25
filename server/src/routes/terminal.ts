@@ -2,6 +2,7 @@ import websocket from '@fastify/websocket';
 import type { FastifyPluginAsync } from 'fastify';
 
 import { FileServiceError } from '../services/fs.js';
+import { ensurePathPermission } from '../services/permission.js';
 import {
 	createTerminalSession,
 	parseTerminalDimension
@@ -33,6 +34,12 @@ export const terminalRoutes: FastifyPluginAsync = async (app) => {
 
 		try {
 			const query = isRecord(request.query) ? request.query : {};
+			const authUser = await app.verifyAuth(request);
+			await ensurePathPermission(
+				authUser,
+				typeof query.cwd === 'string' && query.cwd.length > 0 ? query.cwd : process.cwd(),
+				'write'
+			);
 			const session = await createTerminalSession({
 				cwd: typeof query.cwd === 'string' ? query.cwd : undefined,
 				cols: parseTerminalDimension(query.cols, 120),

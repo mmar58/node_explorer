@@ -19,12 +19,19 @@ import {
 	resolveUploadDestination,
 	writeTextFile
 } from '../services/fs.js';
+import { ensurePathPermission, listPermissionRoots } from '../services/permission.js';
 
 export const fileRoutes: FastifyPluginAsync = async (app) => {
 	await app.register(multipart);
+	app.addHook('preHandler', app.authenticate);
 
 	app.get<{ Querystring: { path?: string } }>('/api/files', async (request, reply) => {
 		try {
+			if ((!request.query.path || request.query.path === '/') && request.authUser.role !== 'admin') {
+				return await listPermissionRoots(request.authUser.id);
+			}
+
+			await ensurePathPermission(request.authUser, request.query.path ?? '/', 'read');
 			const payload = await listDirectory(request.query.path);
 			return payload;
 		} catch (error) {
@@ -44,6 +51,8 @@ export const fileRoutes: FastifyPluginAsync = async (app) => {
 			if (!requestedPath) {
 				return reply.code(400).send({ error: 'The path query parameter is required' });
 			}
+
+			await ensurePathPermission(request.authUser, requestedPath, 'read');
 
 			return await readTextFile(requestedPath);
 		} catch (error) {
@@ -68,6 +77,8 @@ export const fileRoutes: FastifyPluginAsync = async (app) => {
 				return reply.code(400).send({ error: 'The content field must be a string' });
 			}
 
+			await ensurePathPermission(request.authUser, requestedPath, 'write');
+
 			return await writeTextFile(requestedPath, request.body.content);
 		} catch (error) {
 			if (error instanceof FileServiceError) {
@@ -86,6 +97,8 @@ export const fileRoutes: FastifyPluginAsync = async (app) => {
 			if (!requestedPath) {
 				return reply.code(400).send({ error: 'The path query parameter is required' });
 			}
+
+			await ensurePathPermission(request.authUser, requestedPath, 'read');
 
 			const target = await getFileStreamTarget(requestedPath);
 			const contentType = mime.lookup(target.name) || 'application/octet-stream';
@@ -135,6 +148,8 @@ export const fileRoutes: FastifyPluginAsync = async (app) => {
 				return reply.code(400).send({ error: 'The path query parameter is required' });
 			}
 
+			await ensurePathPermission(request.authUser, requestedPath, 'read');
+
 			const target = await getDownloadTarget(requestedPath);
 
 			if (!target.isDirectory) {
@@ -173,6 +188,8 @@ export const fileRoutes: FastifyPluginAsync = async (app) => {
 				return reply.code(400).send({ error: 'The path query parameter is required' });
 			}
 
+			await ensurePathPermission(request.authUser, requestedPath, 'read');
+
 			return await getArchivePreview(requestedPath);
 		} catch (error) {
 			if (error instanceof FileServiceError) {
@@ -191,6 +208,8 @@ export const fileRoutes: FastifyPluginAsync = async (app) => {
 			if (!destinationPath) {
 				return reply.code(400).send({ error: 'The path query parameter is required' });
 			}
+
+			await ensurePathPermission(request.authUser, destinationPath, 'write');
 
 			const uploaded: Array<{ path: string; name: string }> = [];
 
@@ -228,6 +247,8 @@ export const fileRoutes: FastifyPluginAsync = async (app) => {
 				return reply.code(400).send({ error: 'The path query parameter is required' });
 			}
 
+			await ensurePathPermission(request.authUser, requestedPath, 'write');
+
 			return await deletePath(requestedPath);
 		} catch (error) {
 			if (error instanceof FileServiceError) {
@@ -251,6 +272,8 @@ export const fileRoutes: FastifyPluginAsync = async (app) => {
 				return reply.code(400).send({ error: 'The name field must be a string' });
 			}
 
+			await ensurePathPermission(request.authUser, requestedPath, 'write');
+
 			return await renamePath(requestedPath, request.body.name);
 		} catch (error) {
 			if (error instanceof FileServiceError) {
@@ -273,6 +296,9 @@ export const fileRoutes: FastifyPluginAsync = async (app) => {
 			if (typeof request.body.destinationPath !== 'string') {
 				return reply.code(400).send({ error: 'The destinationPath field must be a string' });
 			}
+
+			await ensurePathPermission(request.authUser, requestedPath, 'write');
+			await ensurePathPermission(request.authUser, request.body.destinationPath, 'write');
 
 			return await movePath(requestedPath, request.body.destinationPath);
 		} catch (error) {

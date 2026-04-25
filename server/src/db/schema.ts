@@ -1,0 +1,1 @@
+export const PERMISSION_PATH_MAX_LENGTH = 512;

@@ -41,6 +41,12 @@ pnpm check:client
 
 - `PORT`: backend port, default `3001`
 - `HOST`: backend host, default `127.0.0.1`
+- `JWT_SECRET`: JWT signing secret used for login tokens
+- `DB_HOST`: MySQL host, default `127.0.0.1`
+- `DB_PORT`: MySQL port, default `3306`
+- `DB_USER`: MySQL user, default `root`
+- `DB_PASSWORD`: MySQL password, default empty
+- `DB_NAME`: MySQL database name, default `node_explorer`
 
 ### Client
 
@@ -48,20 +54,21 @@ pnpm check:client
 
 ## First Verification
 
+Before starting the backend, create the MySQL database named by `DB_NAME`. You can either run `server/schema.sql` manually or let the server create the `users` and `permissions` tables automatically on boot.
+
 After starting the backend, these checks should succeed:
 
 - `GET http://127.0.0.1:3001/api/health`
-- `GET http://127.0.0.1:3001/api/files?path=/`
+- `POST http://127.0.0.1:3001/api/auth/register`
 
-On Windows, the `/api/files?path=/` response should list available drives such as `C:/` and `D:/`.
+Registering the first user creates the administrator account. After login, all file, preview, upload, download, editor, and terminal requests require the bearer token returned by the auth endpoints.
 
-After starting the frontend, the home page should render a file browser that lists the device root contents and allows navigation into absolute paths.
+After starting the frontend, the home page should first render the login or registration screen. After login, the workspace should render only the roots available to the current user. Administrators can assign per-path `read` or `write` access from the built-in access panel.
 
 ## Current Limitations
 
-- No auth yet
-- No database wiring yet
-- No file mutations yet
-- No upload/download workflows yet
+- Permissions are path-based and explicit; non-admin users do not automatically inherit global root access
+- The first registered user becomes the administrator automatically
+- Auth currently uses bearer tokens stored in browser local storage rather than httpOnly cookies
 
 Those are planned and tracked in `Instructions.md` and `docs/roadmap.md`.

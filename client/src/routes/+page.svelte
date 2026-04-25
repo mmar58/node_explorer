@@ -14,12 +14,16 @@
 		HardDrive,
 		Image as ImageIcon,
 		LayoutPanelLeft,
+		LockKeyhole,
+		LogOut,
 		Music4,
 		RefreshCw,
 		Save,
 		Search,
+		Shield,
 		SquareTerminal,
 		Upload,
+		UserRound,
 		Video,
 		X
 	} from '@lucide/svelte';
@@ -30,22 +34,35 @@
 	import Terminal from '$lib/components/Terminal.svelte';
 	import ToastStack from '$lib/components/ToastStack.svelte';
 	import {
+		clearAuthToken,
 		deleteFileSystemItem,
+		deletePermission,
 		DirectoryRequestError,
+		getAdminUsers,
 		getArchivePreview,
+		getAuthToken,
+		getCurrentSession,
 		getDirectoryListing,
 		getDownloadUrl,
 		getFileBlobUrl,
 		getTextFileContent,
+		loginUser,
 		moveFileSystemItem,
 		renameFileSystemItem,
+		registerUser,
+		savePermission,
 		saveTextFileContent,
+		setAuthToken,
 		uploadFilesToDirectory,
+		type AdminUser,
 		type ArchiveEntry,
+		type AuthenticatedUser,
+		type AuthResponse,
 		type FileContent,
 		type FileEntry,
 		type FileOperationResult,
-		type UploadItem
+		type UploadItem,
+		type UserPermission
 	} from '$lib/api';
 
 	type FileListingState = {
@@ -84,12 +101,17 @@
 		entry: FileEntry | null;
 	};
 
+	type AuthMode = 'login' | 'register';
+
 	let listing: FileListingState = {
 		currentPath: '/',
 		parentPath: null,
 		entries: []
 	};
-	let isLoading = true;
+	let isLoading = false;
+	let isAuthLoading = true;
+	let isAuthenticating = false;
+	let isAdminLoading = false;
 	let selectedFilePath = '';
 	let filterQuery = '';
 	let terminalCwd: string | undefined = undefined;
@@ -97,6 +119,7 @@
 	let isTerminalVisible = false;
 	let isEditorModalOpen = false;
 	let isLoadingArchive = false;
+	let isAdminPanelOpen = false;
 	let toasts: ToastItem[] = [];
 	let toastId = 0;
 	let openTabs: EditorTab[] = [];
@@ -114,6 +137,15 @@
 		y: 0,
 		entry: null
 	};
+	let currentUser: AuthenticatedUser | null = null;
+	let currentPermissions: UserPermission[] = [];
+	let adminUsers: AdminUser[] = [];
+	let authMode: AuthMode = 'login';
+	let authUsername = '';
+	let authPassword = '';
+	let permissionDraftUserId = '';
+	let permissionDraftPath = '';
+	let permissionDraftLevel: 'read' | 'write' = 'read';
 	let fileUploadInput: HTMLInputElement;
 	let folderUploadInput: HTMLInputElement;
 	let uploadTargetPath = '/';
@@ -167,7 +199,6 @@
 	function pushToast(title: string, message: string, tone: ToastItem['tone'] = 'error') {
 		const id = ++toastId;
 		toasts = [...toasts, { id, title, message, tone }];
-
 		setTimeout(() => {
 			toasts = toasts.filter((item) => item.id !== id);
 		}, 4200);
@@ -177,104 +208,224 @@
 		toasts = toasts.filter((item) => item.id !== id);
 	}
 
+	function getErrorStatusCode(error: unknown) {
+		return typeof error === 'object' && error !== null && 'statusCode' in error
+			? Number((error as { statusCode: number }).statusCode)
+			: null;
+	}
+
+	function handleLogout(skipToast = false) {
+		clearAuthToken();
+		currentUser = null;
+		currentPermissions = [];
+		adminUsers = [];
+		permissionDraftUserId = '';
+		permissionDraftPath = '';
+		permissionDraftLevel = 'read';
+		listing = { currentPath: '/', parentPath: null, entries: [] };
+		selectedFilePath = '';
+		filterQuery = '';
+		terminalCwd = undefined;
+		terminalSessionKey = 0;
+		isTerminalVisible = false;
+		isEditorModalOpen = false;
+		isLoadingArchive = false;
+		openTabs = [];
+		activeTabPath = '';
+		previewState = { isOpen: false, title: '', kind: 'other', src: '', archiveEntries: [] };
+		contextMenu = { isOpen: false, x: 0, y: 0, entry: null };
+		dragTargetPath = '';
+		if (!skipToast) {
+			pushToast('Logged out', 'Your session was cleared.', 'info');
+		}
+	}
+
+	function handleApiFailure(title: string, error: unknown, fallbackMessage: string) {
+		const statusCode = getErrorStatusCode(error);
+		if (statusCode === 401) {
+			handleLogout(true);
+			pushToast('Session expired', 'Please log in again.');
+			return;
+		}
+		pushToast(title, error instanceof Error ? error.message : fallbackMessage);
+	}
+
+	async function refreshAdminUsers() {
+		if (currentUser?.role !== 'admin') {
+			adminUsers = [];
+			permissionDraftUserId = '';
+			return;
+		}
+
+		isAdminLoading = true;
+		try {
+			const response = await getAdminUsers();
+			adminUsers = response.users;
+			if (!permissionDraftUserId) {
+				permissionDraftUserId = String(response.users.find((user) => user.role !== 'admin')?.id ?? response.users[0]?.id ?? '');
+			}
+		} catch (error) {
+			handleApiFailure('Unable to load users', error, 'Unable to load users');
+		} finally {
+			isAdminLoading = false;
+		}
+	}
+
+	async function loadDirectory(path = '/') {
+		if (!currentUser) {
+			return;
+		}
+
+		isLoading = true;
+		try {
+			listing = await getDirectoryListing(path);
+		} catch (error) {
+			const isRecoverableDirectoryError =
+				error instanceof DirectoryRequestError &&
+				path !== '/' &&
+				(error.statusCode === 400 || error.statusCode === 404);
+
+			if (isRecoverableDirectoryError) {
+				try {
+					listing = await getDirectoryListing('/');
+					pushToast('Directory unavailable', 'Requested directory is unavailable. Returned to your accessible roots.');
+					return;
+				} catch (rootError) {
+					handleApiFailure('Unable to load roots', rootError, 'Unable to load roots');
+					return;
+				}
+			}
+
+			handleApiFailure('Unable to load directory', error, 'Unable to load directory');
+		} finally {
+			isLoading = false;
+		}
+	}
+
+	async function hydrateSession() {
+		const token = getAuthToken();
+		if (!token) {
+			isAuthLoading = false;
+			return;
+		}
+
+		try {
+			const session = await getCurrentSession();
+			currentUser = session.user;
+			currentPermissions = session.permissions;
+			isAdminPanelOpen = session.user.role === 'admin';
+			await loadDirectory('/');
+			if (session.user.role === 'admin') {
+				await refreshAdminUsers();
+			}
+		} catch (error) {
+			clearAuthToken();
+			pushToast('Session cleared', error instanceof Error ? error.message : 'Please log in again.');
+		} finally {
+			isAuthLoading = false;
+		}
+	}
+
+	async function handleAuthSubmit() {
+		if (!authUsername.trim() || !authPassword) {
+			pushToast('Credentials required', 'Enter both username and password.');
+			return;
+		}
+
+		isAuthenticating = true;
+		try {
+			const response: AuthResponse = authMode === 'register'
+				? await registerUser(authUsername.trim(), authPassword)
+				: await loginUser(authUsername.trim(), authPassword);
+			setAuthToken(response.token);
+			authPassword = '';
+			const session = await getCurrentSession();
+			currentUser = session.user;
+			currentPermissions = session.permissions;
+			isAdminPanelOpen = session.user.role === 'admin';
+			await loadDirectory('/');
+			if (session.user.role === 'admin') {
+				await refreshAdminUsers();
+			}
+			pushToast(authMode === 'register' ? 'Registration complete' : 'Logged in', `Signed in as ${session.user.username}.`, 'info');
+		} catch (error) {
+			handleApiFailure(
+				authMode === 'register' ? 'Registration failed' : 'Login failed',
+				error,
+				authMode === 'register' ? 'Unable to register user' : 'Unable to log in'
+			);
+		} finally {
+			isAuthenticating = false;
+		}
+	}
+
+	async function handlePermissionSave() {
+		if (!permissionDraftUserId || !permissionDraftPath.trim()) {
+			pushToast('Permission details required', 'Choose a user and enter an absolute path.');
+			return;
+		}
+
+		try {
+			await savePermission(Number(permissionDraftUserId), permissionDraftPath.trim(), permissionDraftLevel);
+			permissionDraftPath = '';
+			pushToast('Permission saved', 'The permission entry was updated.', 'info');
+			await refreshAdminUsers();
+		} catch (error) {
+			handleApiFailure('Unable to save permission', error, 'Unable to save permission');
+		}
+	}
+
+	async function handlePermissionDelete(id: number) {
+		try {
+			await deletePermission(id);
+			pushToast('Permission removed', 'The permission entry was deleted.', 'info');
+			await refreshAdminUsers();
+		} catch (error) {
+			handleApiFailure('Unable to remove permission', error, 'Unable to remove permission');
+		}
+	}
+
 	function getExtension(filePath: string) {
 		const fileName = filePath.split('/').at(-1) ?? filePath;
 		const index = fileName.lastIndexOf('.');
-
-		if (index <= 0) {
-			return '';
-		}
-
-		return fileName.slice(index + 1).toLowerCase();
+		return index <= 0 ? '' : fileName.slice(index + 1).toLowerCase();
 	}
 
 	function getFileType(filePath: string): 'editor' | 'image' | 'video' | 'audio' | 'archive' | 'document' | 'other' {
 		const fileName = filePath.split('/').at(-1)?.toLowerCase() ?? '';
 		const extension = getExtension(filePath);
-
-		if (textExtensions.has(extension) || textFileNames.has(fileName)) {
-			return 'editor';
-		}
-
-		if (imageExtensions.has(extension)) {
-			return 'image';
-		}
-
-		if (videoExtensions.has(extension)) {
-			return 'video';
-		}
-
-		if (audioExtensions.has(extension)) {
-			return 'audio';
-		}
-
-		if (archiveExtensions.has(extension)) {
-			return 'archive';
-		}
-
-		if (documentExtensions.has(extension)) {
-			return 'document';
-		}
-
+		if (textExtensions.has(extension) || textFileNames.has(fileName)) return 'editor';
+		if (imageExtensions.has(extension)) return 'image';
+		if (videoExtensions.has(extension)) return 'video';
+		if (audioExtensions.has(extension)) return 'audio';
+		if (archiveExtensions.has(extension)) return 'archive';
+		if (documentExtensions.has(extension)) return 'document';
 		return 'other';
 	}
 
 	function getLanguageFromPath(filePath: string) {
 		const normalizedPath = filePath.toLowerCase();
-
-		if (normalizedPath.endsWith('.ts') || normalizedPath.endsWith('.tsx')) {
-			return 'typescript';
-		}
-
-		if (normalizedPath.endsWith('.js') || normalizedPath.endsWith('.mjs') || normalizedPath.endsWith('.cjs')) {
-			return 'javascript';
-		}
-
-		if (normalizedPath.endsWith('.json')) {
-			return 'json';
-		}
-
-		if (normalizedPath.endsWith('.svelte') || normalizedPath.endsWith('.html')) {
-			return 'html';
-		}
-
-		if (normalizedPath.endsWith('.md')) {
-			return 'markdown';
-		}
-
-		if (normalizedPath.endsWith('.css')) {
-			return 'css';
-		}
-
-		if (normalizedPath.endsWith('.yml') || normalizedPath.endsWith('.yaml')) {
-			return 'yaml';
-		}
-
-		if (normalizedPath.endsWith('.xml')) {
-			return 'xml';
-		}
-
-		if (normalizedPath.endsWith('.sh') || normalizedPath.endsWith('.ps1') || normalizedPath.endsWith('.bat')) {
-			return 'shell';
-		}
-
+		if (normalizedPath.endsWith('.ts') || normalizedPath.endsWith('.tsx')) return 'typescript';
+		if (normalizedPath.endsWith('.js') || normalizedPath.endsWith('.mjs') || normalizedPath.endsWith('.cjs')) return 'javascript';
+		if (normalizedPath.endsWith('.json')) return 'json';
+		if (normalizedPath.endsWith('.svelte') || normalizedPath.endsWith('.html')) return 'html';
+		if (normalizedPath.endsWith('.md')) return 'markdown';
+		if (normalizedPath.endsWith('.css')) return 'css';
+		if (normalizedPath.endsWith('.yml') || normalizedPath.endsWith('.yaml')) return 'yaml';
+		if (normalizedPath.endsWith('.xml')) return 'xml';
+		if (normalizedPath.endsWith('.sh') || normalizedPath.endsWith('.ps1') || normalizedPath.endsWith('.bat')) return 'shell';
 		return 'plaintext';
 	}
 
 	function formatBytes(value: number) {
-		if (value < 1024) {
-			return `${value} B`;
-		}
-
+		if (value < 1024) return `${value} B`;
 		const units = ['KB', 'MB', 'GB', 'TB'];
 		let size = value / 1024;
 		let index = 0;
-
 		while (size >= 1024 && index < units.length - 1) {
 			size /= 1024;
 			index += 1;
 		}
-
 		return `${size.toFixed(size >= 10 ? 0 : 1)} ${units[index]}`;
 	}
 
@@ -283,58 +434,31 @@
 	}
 
 	function remapPath(candidatePath: string, fromPath: string, toPath: string) {
-		if (candidatePath === fromPath) {
-			return toPath;
-		}
-
-		if (candidatePath.startsWith(`${fromPath}/`)) {
-			return `${toPath}${candidatePath.slice(fromPath.length)}`;
-		}
-
+		if (candidatePath === fromPath) return toPath;
+		if (candidatePath.startsWith(`${fromPath}/`)) return `${toPath}${candidatePath.slice(fromPath.length)}`;
 		return candidatePath;
 	}
 
 	function syncPathsAfterMutation(fromPath: string, result: FileOperationResult) {
 		openTabs = openTabs.map((tab) => {
 			const nextPath = remapPath(tab.path, fromPath, result.path);
-
-			if (nextPath === tab.path) {
-				return tab;
-			}
-
-			return {
-				...tab,
-				path: nextPath,
-				name: nextPath.split('/').at(-1) ?? tab.name
-			};
+			return nextPath === tab.path ? tab : { ...tab, path: nextPath, name: nextPath.split('/').at(-1) ?? tab.name };
 		});
-
 		activeTabPath = remapPath(activeTabPath, fromPath, result.path);
 		selectedFilePath = remapPath(selectedFilePath, fromPath, result.path);
-
-		if (previewState.isOpen) {
-			const previewPath = selectedFilePath;
-
-			if (isAffectedPath(previewPath, result.path) || isAffectedPath(previewPath, fromPath)) {
-				previewState = { ...previewState, isOpen: false };
-			}
+		if (previewState.isOpen && isAffectedPath(selectedFilePath, fromPath)) {
+			previewState = { ...previewState, isOpen: false };
 		}
 	}
 
 	function clearDeletedPath(targetPath: string) {
-		openTabs = openTabs.filter((tab) => !isAffectedPath(tab.path, targetPath));
-
-		if (isAffectedPath(activeTabPath, targetPath)) {
-			activeTabPath = openTabs.at(-1)?.path ?? '';
-		}
-
-		if (isAffectedPath(selectedFilePath, targetPath)) {
-			selectedFilePath = activeTabPath;
-		}
-
-		if (previewState.isOpen && isAffectedPath(selectedFilePath, targetPath)) {
-			previewState = { ...previewState, isOpen: false };
-		}
+		const wasActiveDeleted = isAffectedPath(activeTabPath, targetPath);
+		const wasSelectedDeleted = isAffectedPath(selectedFilePath, targetPath);
+		const nextTabs = openTabs.filter((tab) => !isAffectedPath(tab.path, targetPath));
+		openTabs = nextTabs;
+		if (wasActiveDeleted) activeTabPath = nextTabs.at(-1)?.path ?? '';
+		if (wasSelectedDeleted) selectedFilePath = activeTabPath;
+		if (previewState.isOpen && wasSelectedDeleted) previewState = { ...previewState, isOpen: false };
 	}
 
 	function hasFileDragPayload(event: DragEvent) {
@@ -347,208 +471,108 @@
 
 	function getPathSegments(currentPath: string) {
 		if (currentPath === '/') {
-			return [{ label: 'This device', path: '/' }];
+			return [{ label: 'Accessible roots', path: '/' }];
 		}
-
 		const parts = currentPath.split('/').filter(Boolean);
 		let accumulator = '';
-
 		return [
-			{ label: 'This device', path: '/' },
+			{ label: 'Accessible roots', path: '/' },
 			...parts.map((part, index) => {
 				accumulator = index === 0 ? part : `${accumulator}/${part}`;
-				return {
-					label: part,
-					path: accumulator.includes(':') ? accumulator : `/${accumulator}`
-				};
+				return { label: part, path: accumulator.includes(':') ? accumulator : `/${accumulator}` };
 			})
 		];
-	}
-
-	async function loadDirectory(path = '/') {
-		isLoading = true;
-
-		try {
-			listing = await getDirectoryListing(path);
-		} catch (error) {
-			const isRecoverableDirectoryError =
-				error instanceof DirectoryRequestError &&
-				path !== '/' &&
-				(error.statusCode === 400 || error.statusCode === 404);
-
-			if (isRecoverableDirectoryError) {
-				try {
-					listing = await getDirectoryListing('/');
-					pushToast(
-						'Directory unavailable',
-						'Requested directory is unavailable. Returned to the root directory.'
-					);
-					return;
-				} catch (rootError) {
-					pushToast(
-						'Unable to load root',
-						rootError instanceof Error ? rootError.message : 'Unable to load root directory'
-					);
-					return;
-				}
-			}
-
-			pushToast(
-				'Unable to load directory',
-				error instanceof Error ? error.message : 'Unable to load directory'
-			);
-		} finally {
-			isLoading = false;
-		}
 	}
 
 	async function openEditorFile(filePath: string) {
 		selectedFilePath = filePath;
 		const existingTab = openTabs.find((tab) => tab.path === filePath);
-
 		if (existingTab) {
 			activeTabPath = existingTab.path;
 			return;
 		}
-
 		try {
 			const file = await getTextFileContent(filePath);
-			const tab: EditorTab = {
-				...file,
-				language: getLanguageFromPath(file.path),
-				draftContent: file.content,
-				isDirty: false
-			};
-
+			const tab: EditorTab = { ...file, language: getLanguageFromPath(file.path), draftContent: file.content, isDirty: false };
 			openTabs = [...openTabs, tab];
 			activeTabPath = tab.path;
 			isEditorModalOpen = false;
 		} catch (error) {
-			pushToast('Unable to open file', error instanceof Error ? error.message : 'Unable to load file');
+			handleApiFailure('Unable to open file', error, 'Unable to load file');
 		}
 	}
 
 	async function openPreview(entry: FileEntry) {
 		selectedFilePath = entry.path;
 		const fileType = getFileType(entry.path);
-
 		if (fileType === 'archive') {
 			isLoadingArchive = true;
 			try {
 				const preview = await getArchivePreview(entry.path);
-				previewState = {
-					isOpen: true,
-					title: preview.name,
-					kind: 'archive',
-					src: '',
-					archiveEntries: preview.entries
-				};
+				previewState = { isOpen: true, title: preview.name, kind: 'archive', src: '', archiveEntries: preview.entries };
 			} catch (error) {
-				pushToast(
-					'Unable to preview archive',
-					error instanceof Error ? error.message : 'Unable to inspect archive'
-				);
+				handleApiFailure('Unable to preview archive', error, 'Unable to inspect archive');
 			} finally {
 				isLoadingArchive = false;
 			}
 			return;
 		}
-
 		if (fileType === 'other') {
-			pushToast(
-				'No inline preview',
-				'This file type is not previewed inline yet. Use download from the context menu.',
-				'info'
-			);
+			pushToast('No inline preview', 'This file type is not previewed inline yet. Use download from the context menu.', 'info');
 			return;
 		}
-
 		if (fileType === 'editor') {
 			await openEditorFile(entry.path);
 			return;
 		}
-
-		previewState = {
-			isOpen: true,
-			title: entry.name,
-			kind: fileType,
-			src: getFileBlobUrl(entry.path),
-			archiveEntries: []
-		};
+		previewState = { isOpen: true, title: entry.name, kind: fileType, src: getFileBlobUrl(entry.path), archiveEntries: [] };
 	}
 
 	async function openEntry(entry: FileEntry) {
 		closeContextMenu();
-
 		if (!entry.isAccessible) {
-			pushToast('Permission denied', `${entry.name} cannot be opened with the current filesystem permissions.`);
+			pushToast('Restricted item', `${entry.name} is not accessible with the current filesystem permissions.`);
 			return;
 		}
-
 		if (entry.type === 'directory') {
 			selectedFilePath = entry.path;
 			await loadDirectory(entry.path);
 			return;
 		}
-
-		const fileType = getFileType(entry.path);
-
-		if (fileType === 'editor') {
+		if (getFileType(entry.path) === 'editor') {
 			await openEditorFile(entry.path);
 			return;
 		}
-
 		await openPreview(entry);
 	}
 
 	function handleEditorChange(value: string) {
 		openTabs = openTabs.map((tab) =>
-			tab.path === activeTabPath
-				? {
-					...tab,
-					draftContent: value,
-					isDirty: value !== tab.content
-				}
-				: tab
+			tab.path === activeTabPath ? { ...tab, draftContent: value, isDirty: value !== tab.content } : tab
 		);
 	}
 
 	async function saveActiveTab() {
-		if (!activeTab) {
-			return;
-		}
-
+		if (!activeTab) return;
 		try {
 			const saved = await saveTextFileContent(activeTab.path, activeTab.draftContent);
 			openTabs = openTabs.map((tab) =>
 				tab.path === activeTab.path
-					? {
-						...tab,
-						content: activeTab.draftContent,
-						size: saved.size,
-						modifiedAt: saved.modifiedAt,
-						isDirty: false
-					}
+					? { ...tab, content: activeTab.draftContent, size: saved.size, modifiedAt: saved.modifiedAt, isDirty: false }
 					: tab
 			);
 			pushToast('File saved', `${activeTab.name} was saved successfully.`, 'info');
 			await loadDirectory(listing.currentPath);
 		} catch (error) {
-			pushToast('Save failed', error instanceof Error ? error.message : 'Unable to save file');
+			handleApiFailure('Save failed', error, 'Unable to save file');
 		}
 	}
 
 	function closeTab(path: string) {
 		const nextTabs = openTabs.filter((tab) => tab.path !== path);
 		openTabs = nextTabs;
-
-		if (activeTabPath === path) {
-			activeTabPath = nextTabs.at(-1)?.path ?? '';
-		}
-
-		if (selectedFilePath === path && !nextTabs.some((tab) => tab.path === path)) {
-			selectedFilePath = activeTabPath;
-		}
+		if (activeTabPath === path) activeTabPath = nextTabs.at(-1)?.path ?? '';
+		if (selectedFilePath === path) selectedFilePath = activeTabPath;
 	}
 
 	function openTerminalHere(path = listing.currentPath) {
@@ -559,10 +583,7 @@
 
 	function toggleTerminal() {
 		isTerminalVisible = !isTerminalVisible;
-
-		if (isTerminalVisible && terminalSessionKey === 0) {
-			openTerminalHere();
-		}
+		if (isTerminalVisible && terminalSessionKey === 0) openTerminalHere();
 	}
 
 	function handleTerminalError(message: string) {
@@ -589,33 +610,21 @@
 	}
 
 	async function uploadSelectedFiles(destinationPath: string, files: FileList | null, isFolderUpload: boolean) {
-		if (!files || files.length === 0) {
-			return;
-		}
-
+		if (!files || files.length === 0) return;
 		const items: UploadItem[] = Array.from(files).map((file) => {
 			const relativePath =
 				isFolderUpload && (file as File & { webkitRelativePath?: string }).webkitRelativePath
 					? (file as File & { webkitRelativePath?: string }).webkitRelativePath!
 					: file.name;
-
-			return {
-				file,
-				relativePath
-			};
+			return { file, relativePath };
 		});
-
 		try {
 			const result = await uploadFilesToDirectory(destinationPath, items);
-			pushToast(
-				'Upload complete',
-				`${result.uploaded.length} item${result.uploaded.length === 1 ? '' : 's'} uploaded successfully.`,
-				'info'
-			);
+			pushToast('Upload complete', `${result.uploaded.length} item${result.uploaded.length === 1 ? '' : 's'} uploaded successfully.`, 'info');
 			clearDragState();
 			await loadDirectory(listing.currentPath);
 		} catch (error) {
-			pushToast('Upload failed', error instanceof Error ? error.message : 'Unable to upload files');
+			handleApiFailure('Upload failed', error, 'Unable to upload files');
 		}
 	}
 
@@ -630,86 +639,58 @@
 	}
 
 	function handleDragOver(event: DragEvent, destinationPath: string) {
-		if (!hasFileDragPayload(event)) {
-			return;
-		}
-
+		if (!hasFileDragPayload(event)) return;
 		event.preventDefault();
 		dragTargetPath = destinationPath;
 	}
 
 	function handleDragLeave(event: DragEvent, destinationPath: string) {
 		const nextTarget = event.relatedTarget;
-
-		if (nextTarget instanceof Node && (event.currentTarget as Node | null)?.contains(nextTarget)) {
-			return;
-		}
-
-		if (dragTargetPath === destinationPath) {
-			clearDragState();
-		}
+		if (nextTarget instanceof Node && (event.currentTarget as Node | null)?.contains(nextTarget)) return;
+		if (dragTargetPath === destinationPath) clearDragState();
 	}
 
 	async function handleDropUpload(event: DragEvent, destinationPath: string) {
-		if (!hasFileDragPayload(event)) {
-			return;
-		}
-
+		if (!hasFileDragPayload(event)) return;
 		event.preventDefault();
-		const files = event.dataTransfer?.files ?? null;
-		await uploadSelectedFiles(destinationPath, files, false);
+		await uploadSelectedFiles(destinationPath, event.dataTransfer?.files ?? null, false);
 	}
 
 	async function renameEntry(entry: FileEntry) {
 		const requestedName = window.prompt(`Rename ${entry.name} to:`, entry.name)?.trim();
-
-		if (!requestedName || requestedName === entry.name) {
-			return;
-		}
-
+		if (!requestedName || requestedName === entry.name) return;
 		try {
 			const result = await renameFileSystemItem(entry.path, requestedName);
 			syncPathsAfterMutation(entry.path, result);
 			pushToast('Item renamed', `${entry.name} was renamed to ${result.name}.`, 'info');
 			await loadDirectory(listing.currentPath);
 		} catch (error) {
-			pushToast('Rename failed', error instanceof Error ? error.message : 'Unable to rename item');
+			handleApiFailure('Rename failed', error, 'Unable to rename item');
 		}
 	}
 
 	async function moveEntry(entry: FileEntry) {
-		const destinationPath = window
-			.prompt(`Move ${entry.name} to absolute destination folder:`, listing.currentPath)
-			?.trim();
-
-		if (!destinationPath) {
-			return;
-		}
-
+		const destinationPath = window.prompt(`Move ${entry.name} to absolute destination folder:`, listing.currentPath)?.trim();
+		if (!destinationPath) return;
 		try {
 			const result = await moveFileSystemItem(entry.path, destinationPath);
 			syncPathsAfterMutation(entry.path, result);
 			pushToast('Item moved', `${entry.name} was moved to ${destinationPath}.`, 'info');
 			await loadDirectory(listing.currentPath);
 		} catch (error) {
-			pushToast('Move failed', error instanceof Error ? error.message : 'Unable to move item');
+			handleApiFailure('Move failed', error, 'Unable to move item');
 		}
 	}
 
 	async function deleteEntry(entry: FileEntry) {
-		const confirmed = window.confirm(`Delete ${entry.name}? This cannot be undone.`);
-
-		if (!confirmed) {
-			return;
-		}
-
+		if (!window.confirm(`Delete ${entry.name}? This cannot be undone.`)) return;
 		try {
 			await deleteFileSystemItem(entry.path);
 			clearDeletedPath(entry.path);
 			pushToast('Item deleted', `${entry.name} was removed.`, 'info');
 			await loadDirectory(listing.currentPath);
 		} catch (error) {
-			pushToast('Delete failed', error instanceof Error ? error.message : 'Unable to delete item');
+			handleApiFailure('Delete failed', error, 'Unable to delete item');
 		}
 	}
 
@@ -721,38 +702,20 @@
 			{ id: 'move', label: 'Move' },
 			{ id: 'delete', label: 'Delete' }
 		];
-
 		if (entry.type === 'directory') {
-			return [
-				...baseActions,
-				{ id: 'terminal', label: 'Open terminal here' },
-				{ id: 'upload-files', label: 'Upload files here' },
-				{ id: 'upload-folder', label: 'Upload folder here' }
-			];
+			return [...baseActions, { id: 'terminal', label: 'Open terminal here' }, { id: 'upload-files', label: 'Upload files here' }, { id: 'upload-folder', label: 'Upload folder here' }];
 		}
-
 		const fileType = getFileType(entry.path);
 		const extraActions: Array<{ id: string; label: string }> = [];
-
-		if (fileType !== 'other' && fileType !== 'editor') {
-			extraActions.push({ id: 'preview', label: 'Preview' });
-		}
-
-		if (fileType === 'editor') {
-			extraActions.push({ id: 'open-editor', label: 'Open in editor tab' });
-		}
-
+		if (fileType !== 'other' && fileType !== 'editor') extraActions.push({ id: 'preview', label: 'Preview' });
+		if (fileType === 'editor') extraActions.push({ id: 'open-editor', label: 'Open in editor tab' });
 		return [...baseActions, ...extraActions, { id: 'upload-files', label: 'Upload files to current folder' }];
 	}
 
 	async function handleContextAction(actionId: string) {
 		const entry = contextMenu.entry;
 		closeContextMenu();
-
-		if (!entry) {
-			return;
-		}
-
+		if (!entry) return;
 		switch (actionId) {
 			case 'open':
 			case 'open-editor':
@@ -787,21 +750,11 @@
 
 	function openContextMenu(event: MouseEvent, entry: FileEntry) {
 		event.preventDefault();
-		contextMenu = {
-			isOpen: true,
-			x: event.clientX,
-			y: event.clientY,
-			entry
-		};
+		contextMenu = { isOpen: true, x: event.clientX, y: event.clientY, entry };
 	}
 
 	function closeContextMenu() {
-		contextMenu = {
-			isOpen: false,
-			x: 0,
-			y: 0,
-			entry: null
-		};
+		contextMenu = { isOpen: false, x: 0, y: 0, entry: null };
 	}
 
 	$: activeTab = openTabs.find((tab) => tab.path === activeTabPath) ?? null;
@@ -822,16 +775,11 @@
 				isEditorModalOpen = false;
 			}
 		};
-
 		window.addEventListener('click', handleWindowClick);
 		window.addEventListener('keydown', handleEscape);
 		window.addEventListener('dragend', clearDragState);
 		window.addEventListener('drop', clearDragState);
-
-		void loadDirectory();
-		openTerminalHere();
-		isTerminalVisible = false;
-
+		void hydrateSession();
 		return () => {
 			window.removeEventListener('click', handleWindowClick);
 			window.removeEventListener('keydown', handleEscape);
@@ -843,345 +791,348 @@
 
 <svelte:head>
 	<title>Node Explorer</title>
-	<meta
-		name="description"
-		content="Explorer workspace with typed file opening, editor tabs, media previews, uploads, downloads, and context actions."
-	/>
+	<meta name="description" content="Authenticated explorer workspace with registration, login, role-based access, permission management, typed file opening, and terminal access." />
 </svelte:head>
 
 <div class="app-shell">
-	<input bind:this={fileUploadInput} type="file" multiple hidden onchange={handleFileInputChange} />
-	<input bind:this={folderUploadInput} type="file" multiple hidden webkitdirectory onchange={handleFolderInputChange} />
-
 	<ToastStack items={toasts} onDismiss={dismissToast} />
-	<FileContextMenu
-		isOpen={contextMenu.isOpen}
-		x={contextMenu.x}
-		y={contextMenu.y}
-		title={contextMenu.entry?.name ?? ''}
-		actions={contextActions}
-		onSelect={handleContextAction}
-	/>
-	<FilePreviewModal
-		isOpen={previewState.isOpen}
-		title={previewState.title}
-		kind={previewState.kind}
-		src={previewState.src}
-		archiveEntries={previewState.archiveEntries}
-		onClose={() => (previewState = { ...previewState, isOpen: false })}
-	/>
 
-	<header class="topbar">
-		<div class="brand-block">
-			<div class="brand-icon">
-				<LayoutPanelLeft size={18} />
-			</div>
-			<div>
+	{#if isAuthLoading}
+		<section class="auth-shell panel">
+			<div class="auth-copy">
 				<p class="eyebrow">Node Explorer</p>
-				<h1>Server workspace</h1>
+				<h1>Loading session</h1>
+				<p class="meta">Checking your saved token and available workspace permissions.</p>
 			</div>
-		</div>
+		</section>
+	{:else if !currentUser}
+		<section class="auth-shell panel">
+			<div class="auth-copy">
+				<p class="eyebrow">Node Explorer</p>
+				<h1>{authMode === 'register' ? 'Create your account' : 'Sign in to the server'}</h1>
+				<p class="meta">The first registered account becomes the administrator. Administrators can grant per-path read or write access to other users.</p>
+			</div>
+			<form class="auth-form" onsubmit={(event) => {
+				event.preventDefault();
+				void handleAuthSubmit();
+			}}>
+				<label class="field-block">
+					<span>Username</span>
+					<input bind:value={authUsername} class="text-input" placeholder="admin" autocomplete="username" />
+				</label>
+				<label class="field-block">
+					<span>Password</span>
+					<input bind:value={authPassword} class="text-input" type="password" placeholder="At least 8 characters" autocomplete={authMode === 'login' ? 'current-password' : 'new-password'} />
+				</label>
+				<div class="auth-actions">
+					<button type="submit" class="compact" disabled={isAuthenticating}>
+						<LockKeyhole size={15} />
+						{isAuthenticating ? 'Working...' : authMode === 'register' ? 'Register' : 'Login'}
+					</button>
+					<button type="button" class="ghost compact" onclick={() => (authMode = authMode === 'login' ? 'register' : 'login')}>
+						{authMode === 'login' ? 'Need an account?' : 'Already have an account?'}
+					</button>
+				</div>
+			</form>
+		</section>
+	{:else}
+		<input bind:this={fileUploadInput} type="file" multiple hidden onchange={handleFileInputChange} />
+		<input bind:this={folderUploadInput} type="file" multiple hidden webkitdirectory onchange={handleFolderInputChange} />
 
-		<div class="topbar-actions">
-			<button type="button" class="ghost compact" onclick={() => loadDirectory(listing.currentPath)}>
-				<RefreshCw size={15} />
-				Refresh
-			</button>
-			<button type="button" class="ghost compact" onclick={() => triggerUploadFiles(listing.currentPath)}>
-				<Upload size={15} />
-				Upload files
-			</button>
-			<button type="button" class="ghost compact" onclick={() => triggerUploadFolder(listing.currentPath)}>
-				<FolderUp size={15} />
-				Upload folder
-			</button>
-			<button type="button" class:active-toggle={isTerminalVisible} class="ghost compact" onclick={toggleTerminal}>
-				<SquareTerminal size={15} />
-				{isTerminalVisible ? 'Hide terminal' : 'Show terminal'}
-			</button>
-		</div>
-	</header>
+		<FileContextMenu isOpen={contextMenu.isOpen} x={contextMenu.x} y={contextMenu.y} title={contextMenu.entry?.name ?? ''} actions={contextActions} onSelect={handleContextAction} />
+		<FilePreviewModal isOpen={previewState.isOpen} title={previewState.title} kind={previewState.kind} src={previewState.src} archiveEntries={previewState.archiveEntries} onClose={() => (previewState = { ...previewState, isOpen: false })} />
 
-	<section class="workspace-frame">
-		<aside class="sidebar panel">
-			<div class="sidebar-top">
+		<header class="topbar">
+			<div class="brand-block">
+				<div class="brand-icon">
+					<LayoutPanelLeft size={18} />
+				</div>
 				<div>
-					<p class="label">Location</p>
-					<div class="location-chip">
-						<HardDrive size={16} />
-						<strong>{listing.currentPath}</strong>
+					<p class="eyebrow">Node Explorer</p>
+					<h1>Server workspace</h1>
+				</div>
+			</div>
+			<div class="topbar-actions">
+				<div class="user-pill">
+					<UserRound size={15} />
+					<span>{currentUser.username}</span>
+					<strong>{currentUser.role}</strong>
+				</div>
+				{#if currentUser.role === 'admin'}
+					<button type="button" class="ghost compact" onclick={() => {
+						isAdminPanelOpen = !isAdminPanelOpen;
+						if (isAdminPanelOpen) {
+							void refreshAdminUsers();
+						}
+					}}>
+						<Shield size={15} />
+						{isAdminPanelOpen ? 'Hide access panel' : 'Show access panel'}
+					</button>
+				{/if}
+				<button type="button" class="ghost compact" onclick={() => handleLogout()}>
+					<LogOut size={15} />
+					Logout
+				</button>
+			</div>
+		</header>
+
+		<section class="workspace-frame">
+			<aside class="sidebar panel">
+				<div class="sidebar-top">
+					<div>
+						<p class="label">Location</p>
+						<div class="location-chip">
+							<HardDrive size={16} />
+							<strong>{listing.currentPath}</strong>
+						</div>
+					</div>
+					<div class="sidebar-actions">
+						<button type="button" class="ghost compact" onclick={() => loadDirectory(listing.currentPath)}>
+							<RefreshCw size={15} />
+							Refresh
+						</button>
+						<button type="button" class="ghost compact" disabled={!listing.parentPath} onclick={() => loadDirectory(listing.parentPath ?? '/')}>
+							<ChevronUp size={15} />
+							Up
+						</button>
 					</div>
 				</div>
-				<div class="sidebar-actions">
-					<button
-						type="button"
-						class="ghost compact"
-						disabled={!listing.parentPath}
-						onclick={() => loadDirectory(listing.parentPath ?? '/')}
-					>
-						<ChevronUp size={15} />
-						Up
-					</button>
-					<button type="button" class="ghost compact" onclick={() => downloadItem(listing.currentPath)}>
-						<Download size={15} />
-						Download
-					</button>
+
+				<div class="permission-summary">
+					<p class="label">Permissions</p>
+					<p class="meta">{currentUser.role === 'admin' ? 'Administrator access grants full control across all paths.' : currentPermissions.length > 0 ? `${currentPermissions.length} explicit path permission${currentPermissions.length === 1 ? '' : 's'} assigned.` : 'No explicit path access has been assigned yet.'}</p>
 				</div>
-			</div>
 
-			<nav class="breadcrumbs" aria-label="Breadcrumbs">
-				{#each breadcrumbs as crumb, index (crumb.path)}
-					<button type="button" class="crumb" onclick={() => loadDirectory(crumb.path)}>
-						{crumb.label}
-					</button>
-					{#if index < breadcrumbs.length - 1}
-						<span class="crumb-separator">/</span>
-					{/if}
-				{/each}
-			</nav>
-
-			<label class="search-shell">
-				<Search size={15} />
-				<input bind:value={filterQuery} placeholder="Filter current folder" />
-			</label>
-
-			{#if isLoading}
-				<p class="notice">Loading directory contents...</p>
-			{:else if filteredEntries.length === 0}
-				<p
-					class="notice"
-					class:drop-target={dragTargetPath === listing.currentPath}
-					ondragover={(event) => handleDragOver(event, listing.currentPath)}
-					ondragleave={(event) => handleDragLeave(event, listing.currentPath)}
-					ondrop={(event) => handleDropUpload(event, listing.currentPath)}
-				>
-					{filterQuery ? 'No items match the current filter.' : 'This directory is empty.'}
-				</p>
-			{:else}
-				<div
-					class="explorer-list"
-					class:drop-target={dragTargetPath === listing.currentPath}
-					role="list"
-					ondragover={(event) => handleDragOver(event, listing.currentPath)}
-					ondragleave={(event) => handleDragLeave(event, listing.currentPath)}
-					ondrop={(event) => handleDropUpload(event, listing.currentPath)}
-				>
-					{#each filteredEntries as entry (entry.path)}
-						<button
-							type="button"
-							class="item-card"
-							class:selected={entry.path === selectedFilePath}
-							class:directory={entry.type === 'directory'}
-							class:drop-target={entry.type === 'directory' && dragTargetPath === entry.path}
-							class:restricted={!entry.isAccessible}
-							onclick={() => openEntry(entry)}
-							oncontextmenu={(event) => openContextMenu(event, entry)}
-							ondragover={(event) => entry.type === 'directory' && handleDragOver(event, entry.path)}
-							ondragleave={(event) => entry.type === 'directory' && handleDragLeave(event, entry.path)}
-							ondrop={(event) => entry.type === 'directory' && handleDropUpload(event, entry.path)}
-						>
-							<div class="item-main">
-								<div class="item-icon">
-									{#if entry.type === 'directory'}
-										<Folder size={16} />
-									{:else if getFileType(entry.path) === 'image'}
-										<ImageIcon size={16} />
-									{:else if getFileType(entry.path) === 'video'}
-										<Video size={16} />
-									{:else if getFileType(entry.path) === 'audio'}
-										<Music4 size={16} />
-									{:else if getFileType(entry.path) === 'archive'}
-										<FileArchive size={16} />
-									{:else if getFileType(entry.path) === 'document'}
-										<FileText size={16} />
-									{:else if getFileType(entry.path) === 'editor'}
-										<FileCode2 size={16} />
-									{:else}
-										<File size={16} />
-									{/if}
-								</div>
-								<div class="item-copy">
-									<strong>{entry.name}</strong>
-									<span>
-										{#if !entry.isAccessible}
-											Restricted item
-										{:else if entry.type === 'directory'}
-											Folder
-										{:else}
-											{formatBytes(entry.size)}
-										{/if}
-									</span>
-								</div>
+				{#if currentUser.role === 'admin' && isAdminPanelOpen}
+					<section class="admin-panel">
+						<div class="admin-header">
+							<div>
+								<p class="label">Access control</p>
+								<h2>Users and path rules</h2>
 							</div>
-							<time>{new Date(entry.modifiedAt).toLocaleDateString()}</time>
-						</button>
+							<button type="button" class="ghost compact" onclick={() => refreshAdminUsers()}>
+								<RefreshCw size={15} />
+								Reload
+							</button>
+						</div>
+
+						<div class="permission-form">
+							<select bind:value={permissionDraftUserId} class="text-input select-input">
+								<option value="">Select user</option>
+								{#each adminUsers as user (user.id)}
+									<option value={String(user.id)}>{user.username} ({user.role})</option>
+								{/each}
+							</select>
+							<input bind:value={permissionDraftPath} class="text-input" placeholder="D:/node/project" />
+							<select bind:value={permissionDraftLevel} class="text-input select-input">
+								<option value="read">read</option>
+								<option value="write">write</option>
+							</select>
+							<button type="button" class="compact" onclick={handlePermissionSave}>Save rule</button>
+						</div>
+
+						{#if isAdminLoading}
+							<p class="notice slim">Loading users and permissions...</p>
+						{:else}
+							<div class="admin-user-list">
+								{#each adminUsers as user (user.id)}
+									<div class="admin-user-card">
+										<div class="admin-user-heading">
+											<div>
+												<strong>{user.username}</strong>
+												<span>{user.role}</span>
+											</div>
+											<small>{new Date(user.createdAt).toLocaleDateString()}</small>
+										</div>
+										{#if user.permissions.length === 0}
+											<p class="meta">No explicit paths assigned.</p>
+										{:else}
+											<div class="permission-list">
+												{#each user.permissions as permission (permission.id)}
+													<div class="permission-pill">
+														<div>
+															<strong>{permission.level}</strong>
+															<span>{permission.path}</span>
+														</div>
+														<button type="button" class="ghost compact danger" onclick={() => handlePermissionDelete(permission.id)}>Remove</button>
+													</div>
+												{/each}
+											</div>
+										{/if}
+									</div>
+								{/each}
+							</div>
+						{/if}
+					</section>
+				{/if}
+
+				<nav class="breadcrumbs" aria-label="Breadcrumbs">
+					{#each breadcrumbs as crumb, index (crumb.path)}
+						<button type="button" class="crumb" onclick={() => loadDirectory(crumb.path)}>{crumb.label}</button>
+						{#if index < breadcrumbs.length - 1}
+							<span class="crumb-separator">/</span>
+						{/if}
 					{/each}
-				</div>
-			{/if}
-		</aside>
+				</nav>
 
-		<section class="content-area">
-			<div class="content-toolbar panel compact-panel">
-				<div class="toolbar-copy">
-					<p class="label">Focused item</p>
-					<h2>{activeTab?.name ?? selectedEntry?.name ?? 'No item open'}</h2>
-					<p class="meta">
-						{activeTab?.path ??
-							selectedEntry?.path ??
-							'Open code or text files into tabs. Media, PDF, and zip files open in preview overlays.'}
+				<label class="search-shell">
+					<Search size={15} />
+					<input bind:value={filterQuery} placeholder="Filter current folder" />
+				</label>
+
+				{#if isLoading}
+					<p class="notice">Loading directory contents...</p>
+				{:else if filteredEntries.length === 0}
+					<p class="notice" class:drop-target={dragTargetPath === listing.currentPath} ondragover={(event) => handleDragOver(event, listing.currentPath)} ondragleave={(event) => handleDragLeave(event, listing.currentPath)} ondrop={(event) => handleDropUpload(event, listing.currentPath)}>
+						{filterQuery ? 'No items match the current filter.' : 'This directory is empty.'}
 					</p>
-				</div>
-				<div class="toolbar-actions">
-					{#if selectedEntry}
-						<button type="button" class="ghost compact" onclick={() => downloadItem(selectedEntry.path)}>
-							<Download size={15} />
-							Download
-						</button>
-						<button type="button" class="ghost compact" onclick={() => renameEntry(selectedEntry)}>
-							Rename
-						</button>
-						<button type="button" class="ghost compact" onclick={() => moveEntry(selectedEntry)}>
-							Move
-						</button>
-						<button type="button" class="ghost compact danger" onclick={() => deleteEntry(selectedEntry)}>
-							Delete
-						</button>
-					{/if}
-					{#if activeTab}
-						<button type="button" class="ghost compact" onclick={() => (isEditorModalOpen = true)}>
-							<FileCode2 size={15} />
-							Pop out editor
-						</button>
-						<button type="button" class="compact" disabled={!activeTab.isDirty} onclick={saveActiveTab}>
-							<Save size={15} />
-							Save
-						</button>
-					{/if}
-					<button type="button" class="ghost compact" onclick={() => openTerminalHere(listing.currentPath)}>
-						<SquareTerminal size={15} />
-						Terminal here
-					</button>
-				</div>
-			</div>
+				{:else}
+					<div class="explorer-list" class:drop-target={dragTargetPath === listing.currentPath} role="list" ondragover={(event) => handleDragOver(event, listing.currentPath)} ondragleave={(event) => handleDragLeave(event, listing.currentPath)} ondrop={(event) => handleDropUpload(event, listing.currentPath)}>
+						{#each filteredEntries as entry (entry.path)}
+							<button type="button" class="item-card" class:selected={entry.path === selectedFilePath} class:directory={entry.type === 'directory'} class:drop-target={entry.type === 'directory' && dragTargetPath === entry.path} class:restricted={!entry.isAccessible} onclick={() => openEntry(entry)} oncontextmenu={(event) => openContextMenu(event, entry)} ondragover={(event) => entry.type === 'directory' && handleDragOver(event, entry.path)} ondragleave={(event) => entry.type === 'directory' && handleDragLeave(event, entry.path)} ondrop={(event) => entry.type === 'directory' && handleDropUpload(event, entry.path)}>
+								<div class="item-main">
+									<div class="item-icon">
+										{#if entry.type === 'directory'}
+											<Folder size={16} />
+										{:else if getFileType(entry.path) === 'image'}
+											<ImageIcon size={16} />
+										{:else if getFileType(entry.path) === 'video'}
+											<Video size={16} />
+										{:else if getFileType(entry.path) === 'audio'}
+											<Music4 size={16} />
+										{:else if getFileType(entry.path) === 'archive'}
+											<FileArchive size={16} />
+										{:else if getFileType(entry.path) === 'document'}
+											<FileText size={16} />
+										{:else if getFileType(entry.path) === 'editor'}
+											<FileCode2 size={16} />
+										{:else}
+											<File size={16} />
+										{/if}
+									</div>
+									<div class="item-copy">
+										<strong>{entry.name}</strong>
+										<span>{#if !entry.isAccessible}Restricted item{:else if entry.type === 'directory'}Folder{:else}{formatBytes(entry.size)}{/if}</span>
+									</div>
+								</div>
+								<time>{new Date(entry.modifiedAt).toLocaleDateString()}</time>
+							</button>
+						{/each}
+					</div>
+				{/if}
+			</aside>
 
-			<section class="editor-panel panel">
-				{#if activeTab}
-					<div class="editor-stack">
-						<div class="tab-strip">
-							<div class="tabs-row">
-								{#each openTabs as tab (tab.path)}
-									<button
-										type="button"
-										class="editor-tab"
-										class:active={tab.path === activeTabPath}
-										onclick={() => {
+			<section class="content-area">
+				<div class="content-toolbar panel compact-panel">
+					<div class="toolbar-copy">
+						<p class="label">Focused item</p>
+						<h2>{activeTab?.name ?? selectedEntry?.name ?? 'No item open'}</h2>
+						<p class="meta">{activeTab?.path ?? selectedEntry?.path ?? 'Open code or text files into tabs. Media, PDF, and zip files open in preview overlays.'}</p>
+					</div>
+					<div class="toolbar-actions">
+						{#if selectedEntry}
+							<button type="button" class="ghost compact" onclick={() => downloadItem(selectedEntry.path)}><Download size={15} />Download</button>
+							<button type="button" class="ghost compact" onclick={() => renameEntry(selectedEntry)}>Rename</button>
+							<button type="button" class="ghost compact" onclick={() => moveEntry(selectedEntry)}>Move</button>
+							<button type="button" class="ghost compact danger" onclick={() => deleteEntry(selectedEntry)}>Delete</button>
+						{/if}
+						<button type="button" class="ghost compact" onclick={() => triggerUploadFiles(listing.currentPath)}><Upload size={15} />Upload files</button>
+						<button type="button" class="ghost compact" onclick={() => triggerUploadFolder(listing.currentPath)}><FolderUp size={15} />Upload folder</button>
+						{#if activeTab}
+							<button type="button" class="ghost compact" onclick={() => (isEditorModalOpen = true)}><FileCode2 size={15} />Pop out editor</button>
+							<button type="button" class="compact" disabled={!activeTab.isDirty} onclick={saveActiveTab}><Save size={15} />Save</button>
+						{/if}
+						<button type="button" class:active-toggle={isTerminalVisible} class="ghost compact" onclick={toggleTerminal}><SquareTerminal size={15} />{isTerminalVisible ? 'Hide terminal' : 'Show terminal'}</button>
+					</div>
+				</div>
+
+				<section class="editor-panel panel">
+					{#if activeTab}
+						<div class="editor-stack">
+							<div class="tab-strip">
+								<div class="tabs-row">
+									{#each openTabs as tab (tab.path)}
+										<button type="button" class="editor-tab" class:active={tab.path === activeTabPath} onclick={() => {
 											activeTabPath = tab.path;
 											selectedFilePath = tab.path;
-										}}
-									>
-										<FileCode2 size={14} />
-										<span>{tab.name}</span>
-										{#if tab.isDirty}
-											<em>edited</em>
-										{/if}
-										<span
-											class="close-tab"
-											role="button"
-											tabindex="0"
-											onclick={(event) => {
+										}}>
+											<FileCode2 size={14} />
+											<span>{tab.name}</span>
+											{#if tab.isDirty}<em>edited</em>{/if}
+											<span class="close-tab" role="button" tabindex="0" onclick={(event) => {
 												event.stopPropagation();
 												closeTab(tab.path);
-											}}
-											onkeydown={(event) => {
+											}} onkeydown={(event) => {
 												if (event.key === 'Enter' || event.key === ' ') {
 													event.preventDefault();
 													closeTab(tab.path);
 												}
-											}}
-										>
-											×
-										</span>
-									</button>
-								{/each}
+											}}>×</span>
+										</button>
+									{/each}
+								</div>
+								<div class="editor-stats">
+									<span>{activeTab.language}</span>
+									<span>{formatBytes(activeTab.size)}</span>
+									<span>{new Date(activeTab.modifiedAt).toLocaleString()}</span>
+								</div>
 							</div>
-							<div class="editor-stats">
-								<span>{activeTab.language}</span>
-								<span>{formatBytes(activeTab.size)}</span>
-								<span>{new Date(activeTab.modifiedAt).toLocaleString()}</span>
+							<div class="editor-frame attached-editor">
+								<CodeEditor value={activeTab.draftContent} language={activeTab.language} onChange={handleEditorChange} />
 							</div>
 						</div>
-
-						<div class="editor-frame attached-editor">
-							<CodeEditor value={activeTab.draftContent} language={activeTab.language} onChange={handleEditorChange} />
+					{:else if isLoadingArchive}
+						<p class="notice">Loading archive preview...</p>
+					{:else}
+						<div class="empty-state">
+							<FileCode2 size={28} />
+							<h3>Permission-aware workspace</h3>
+							<p>Your visible roots and file operations are governed by the current account role and assigned path permissions.</p>
 						</div>
-					</div>
-				{:else if isLoadingArchive}
-					<p class="notice">Loading archive preview...</p>
-				{:else}
-					<div class="empty-state">
-						<FileCode2 size={28} />
-						<h3>Open files by type</h3>
-						<p>
-							Code and text files open in editor tabs. Images, video, audio, PDF, and zip files open
-							in popups. Use right click for upload, download, preview, and terminal actions.
-						</p>
-					</div>
-				{/if}
+					{/if}
+				</section>
 			</section>
 		</section>
-	</section>
 
-	{#if isTerminalVisible}
-		<section class="terminal-tray panel">
-			<header class="tray-header">
-				<div>
-					<p class="label">Terminal</p>
-					<h2>Attached console</h2>
-					<p class="meta">Connected to the current folder with cmd.exe on Windows.</p>
-				</div>
-				<div class="toolbar-actions">
-					<button type="button" class="ghost compact" onclick={() => openTerminalHere(listing.currentPath)}>
-						<RefreshCw size={15} />
-						Reconnect here
-					</button>
-					<button type="button" class="ghost compact" onclick={toggleTerminal}>
-						<X size={15} />
-						Hide
-					</button>
-				</div>
-			</header>
-
-			{#key terminalSessionKey}
-				<Terminal cwd={terminalCwd} onError={handleTerminalError} />
-			{/key}
-		</section>
-	{/if}
-
-	{#if isEditorModalOpen && activeTab}
-		<div class="modal-backdrop" role="button" tabindex="0" aria-label="Close editor overlay" onclick={() => (isEditorModalOpen = false)} onkeydown={(event) => event.key === 'Escape' && (isEditorModalOpen = false)}>
-			<div class="modal-panel" role="dialog" tabindex="-1" aria-modal="true" aria-label="Editor popout" onclick={(event) => event.stopPropagation()} onkeydown={(event) => event.stopPropagation()}>
-				<header class="modal-header">
+		{#if isTerminalVisible}
+			<section class="terminal-tray panel">
+				<header class="tray-header">
 					<div>
-						<p class="label">Editor popout</p>
-						<h2>{activeTab.name}</h2>
-						<p class="meta">{activeTab.path}</p>
+						<p class="label">Terminal</p>
+						<h2>Attached console</h2>
+						<p class="meta">Connected to the current folder with cmd.exe on Windows.</p>
 					</div>
 					<div class="toolbar-actions">
-						<button type="button" class="ghost compact" onclick={() => (isEditorModalOpen = false)}>
-							<X size={15} />
-							Close overlay
-						</button>
-						<button type="button" class="compact" disabled={!activeTab.isDirty} onclick={saveActiveTab}>
-							<Save size={15} />
-							Save
-						</button>
+						<button type="button" class="ghost compact" onclick={() => openTerminalHere(listing.currentPath)}><RefreshCw size={15} />Reconnect here</button>
+						<button type="button" class="ghost compact" onclick={toggleTerminal}><X size={15} />Hide</button>
 					</div>
 				</header>
-				<div class="editor-frame modal-editor">
-					<CodeEditor value={activeTab.draftContent} language={activeTab.language} onChange={handleEditorChange} />
+				{#key terminalSessionKey}
+					<Terminal cwd={terminalCwd} onError={handleTerminalError} />
+				{/key}
+			</section>
+		{/if}
+
+		{#if isEditorModalOpen && activeTab}
+			<div class="modal-backdrop" role="button" tabindex="0" aria-label="Close editor overlay" onclick={() => (isEditorModalOpen = false)} onkeydown={(event) => event.key === 'Escape' && (isEditorModalOpen = false)}>
+				<div class="modal-panel" role="dialog" tabindex="-1" aria-modal="true" aria-label="Editor popout" onclick={(event) => event.stopPropagation()} onkeydown={(event) => event.stopPropagation()}>
+					<header class="modal-header">
+						<div>
+							<p class="label">Editor popout</p>
+							<h2>{activeTab.name}</h2>
+							<p class="meta">{activeTab.path}</p>
+						</div>
+						<div class="toolbar-actions">
+							<button type="button" class="ghost compact" onclick={() => (isEditorModalOpen = false)}><X size={15} />Close overlay</button>
+							<button type="button" class="compact" disabled={!activeTab.isDirty} onclick={saveActiveTab}><Save size={15} />Save</button>
+						</div>
+					</header>
+					<div class="editor-frame modal-editor">
+						<CodeEditor value={activeTab.draftContent} language={activeTab.language} onChange={handleEditorChange} />
+					</div>
 				</div>
 			</div>
-		</div>
+		{/if}
 	{/if}
 </div>
 
@@ -1208,7 +1159,8 @@
 	}
 
 	button,
-	input {
+	input,
+	select {
 		font: inherit;
 	}
 
@@ -1217,6 +1169,51 @@
 		margin: 0 auto;
 		padding: 18px;
 		color: #edf3ff;
+	}
+
+	.auth-shell {
+		max-width: 780px;
+		margin: 8vh auto 0;
+		padding: 28px;
+		display: grid;
+		gap: 22px;
+	}
+
+	.auth-copy {
+		display: grid;
+		gap: 10px;
+	}
+
+	.auth-form,
+	.permission-form {
+		display: grid;
+		gap: 12px;
+	}
+
+	.auth-actions {
+		display: flex;
+		gap: 10px;
+		flex-wrap: wrap;
+	}
+
+	.field-block {
+		display: grid;
+		gap: 8px;
+		font-size: 0.9rem;
+		color: #dbe8ff;
+	}
+
+	.text-input {
+		width: 100%;
+		padding: 11px 13px;
+		border-radius: 12px;
+		border: 1px solid rgba(136, 167, 219, 0.18);
+		background: rgba(16, 28, 46, 0.9);
+		color: #edf3ff;
+	}
+
+	.select-input {
+		appearance: none;
 	}
 
 	.topbar {
@@ -1278,21 +1275,23 @@
 
 	.workspace-frame {
 		display: grid;
-		grid-template-columns: 360px minmax(0, 1fr);
+		grid-template-columns: 400px minmax(0, 1fr);
 		gap: 14px;
 		min-height: calc(100vh - 170px);
 	}
 
 	.sidebar {
-		display: grid;
-		grid-template-rows: auto auto auto minmax(0, 1fr);
+		display: flex;
+		flex-direction: column;
 		gap: 14px;
+		min-height: 0;
 	}
 
 	.sidebar-top,
 	.content-toolbar,
 	.tray-header,
-	.modal-header {
+	.modal-header,
+	.admin-header {
 		display: flex;
 		justify-content: space-between;
 		align-items: flex-start;
@@ -1314,6 +1313,82 @@
 	.location-chip strong,
 	.meta {
 		word-break: break-all;
+	}
+
+	.permission-summary,
+	.admin-panel {
+		padding: 14px;
+		border-radius: 18px;
+		background: rgba(16, 28, 46, 0.72);
+		border: 1px solid rgba(136, 167, 219, 0.12);
+	}
+
+	.admin-panel {
+		display: grid;
+		gap: 14px;
+	}
+
+	.admin-user-list,
+	.permission-list {
+		display: grid;
+		gap: 10px;
+	}
+
+	.admin-user-card {
+		padding: 12px;
+		border-radius: 14px;
+		background: rgba(8, 18, 32, 0.72);
+		border: 1px solid rgba(136, 167, 219, 0.12);
+		display: grid;
+		gap: 10px;
+	}
+
+	.admin-user-heading {
+		display: flex;
+		justify-content: space-between;
+		gap: 10px;
+		align-items: center;
+	}
+
+	.admin-user-heading strong,
+	.permission-pill strong {
+		display: block;
+		color: #edf3ff;
+	}
+
+	.admin-user-heading span,
+	.permission-pill span,
+	.admin-user-heading small {
+		color: #9fb5dc;
+		font-size: 0.82rem;
+	}
+
+	.permission-pill {
+		display: flex;
+		justify-content: space-between;
+		gap: 10px;
+		align-items: center;
+		padding: 10px 12px;
+		border-radius: 12px;
+		background: rgba(16, 28, 46, 0.9);
+	}
+
+	.user-pill {
+		display: inline-flex;
+		align-items: center;
+		gap: 8px;
+		padding: 10px 12px;
+		border-radius: 999px;
+		background: rgba(16, 28, 46, 0.9);
+		border: 1px solid rgba(136, 167, 219, 0.12);
+	}
+
+	.user-pill strong {
+		padding: 4px 8px;
+		border-radius: 999px;
+		background: rgba(95, 160, 255, 0.18);
+		text-transform: uppercase;
+		font-size: 0.75rem;
 	}
 
 	.sidebar-actions,
@@ -1411,6 +1486,7 @@
 		gap: 8px;
 		overflow: auto;
 		padding-right: 4px;
+		min-height: 240px;
 	}
 
 	.explorer-list.drop-target,
@@ -1489,6 +1565,16 @@
 	.notice {
 		font-size: 0.88rem;
 		color: #aebfdf;
+	}
+
+	.notice {
+		padding: 16px;
+		border-radius: 16px;
+		background: rgba(16, 28, 46, 0.9);
+	}
+
+	.notice.slim {
+		padding: 10px 12px;
 	}
 
 	.content-area {
@@ -1591,12 +1677,6 @@
 		color: #edf3ff;
 	}
 
-	.notice {
-		padding: 16px;
-		border-radius: 16px;
-		background: rgba(16, 28, 46, 0.9);
-	}
-
 	.terminal-tray {
 		margin-top: 14px;
 	}
@@ -1629,7 +1709,7 @@
 		height: calc(100vh - 220px);
 	}
 
-	@media (max-width: 1080px) {
+	@media (max-width: 1180px) {
 		.workspace-frame {
 			grid-template-columns: 1fr;
 		}
@@ -1644,7 +1724,10 @@
 		.sidebar-top,
 		.content-toolbar,
 		.tray-header,
-		.modal-header {
+		.modal-header,
+		.admin-header,
+		.permission-pill,
+		.admin-user-heading {
 			flex-direction: column;
 		}
 

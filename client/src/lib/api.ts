@@ -1,5 +1,36 @@
 import { env } from '$env/dynamic/public';
 
+export type UserRole = 'admin' | 'user';
+
+export type UserPermission = {
+	id: number;
+	userId: number;
+	path: string;
+	level: 'read' | 'write';
+	createdAt: string;
+};
+
+export type AuthenticatedUser = {
+	id: number;
+	username: string;
+	role: UserRole;
+};
+
+export type AuthResponse = {
+	token: string;
+	user: AuthenticatedUser;
+};
+
+export type CurrentSessionResponse = {
+	user: AuthenticatedUser;
+	permissions: UserPermission[];
+};
+
+export type AdminUser = AuthenticatedUser & {
+	createdAt: string;
+	permissions: UserPermission[];
+};
+
 export type FileEntry = {
 	name: string;
 	path: string;
@@ -68,12 +99,64 @@ export class DirectoryRequestError extends Error {
 }
 
 const apiBaseUrl = env.PUBLIC_API_BASE_URL || 'http://127.0.0.1:3001';
+const authStorageKey = 'node-explorer-auth-token';
+
+function getStoredToken() {
+	if (typeof window === 'undefined') {
+		return null;
+	}
+
+	return window.localStorage.getItem(authStorageKey);
+}
+
+export function setAuthToken(token: string) {
+	if (typeof window !== 'undefined') {
+		window.localStorage.setItem(authStorageKey, token);
+	}
+}
+
+export function clearAuthToken() {
+	if (typeof window !== 'undefined') {
+		window.localStorage.removeItem(authStorageKey);
+	}
+}
+
+export function getAuthToken() {
+	return getStoredToken();
+}
+
+function withAuthHeaders(headers: HeadersInit = {}) {
+	const token = getStoredToken();
+	return token
+		? {
+			...headers,
+			Authorization: `Bearer ${token}`
+		}
+		: headers;
+}
+
+async function apiFetch(input: URL | string, init: RequestInit = {}) {
+	return fetch(input, {
+		...init,
+		headers: withAuthHeaders(init.headers)
+	});
+}
+
+function withAuthQuery(url: URL) {
+	const token = getStoredToken();
+
+	if (token) {
+		url.searchParams.set('token', token);
+	}
+
+	return url;
+}
 
 export async function getDirectoryListing(requestedPath = '/') {
 	const url = new URL('/api/files', apiBaseUrl);
 	url.searchParams.set('path', requestedPath);
 
-	const response = await fetch(url);
+	const response = await apiFetch(url);
 
 	if (!response.ok) {
 		const payload = (await response.json().catch(() => null)) as { error?: string } | null;
@@ -102,7 +185,7 @@ export async function getTextFileContent(requestedPath: string) {
 	const url = new URL('/api/files/content', apiBaseUrl);
 	url.searchParams.set('path', requestedPath);
 
-	const response = await fetch(url);
+	const response = await apiFetch(url);
 
 	if (!response.ok) {
 		await throwApiError(response, 'Unable to read file');
@@ -113,7 +196,7 @@ export async function getTextFileContent(requestedPath: string) {
 
 export async function saveTextFileContent(requestedPath: string, content: string) {
 	const url = new URL('/api/files/content', apiBaseUrl);
-	const response = await fetch(url, {
+	const response = await apiFetch(url, {
 		method: 'PUT',
 		headers: {
 			'content-type': 'application/json'
@@ -132,7 +215,7 @@ export async function getArchivePreview(requestedPath: string) {
 	const url = new URL('/api/files/archive', apiBaseUrl);
 	url.searchParams.set('path', requestedPath);
 
-	const response = await fetch(url);
+	const response = await apiFetch(url);
 
 	if (!response.ok) {
 		await throwApiError(response, 'Unable to inspect archive');
@@ -151,7 +234,7 @@ export async function uploadFilesToDirectory(destinationPath: string, items: Upl
 		formData.append('files', item.file, item.relativePath);
 	}
 
-	const response = await fetch(url, {
+	const response = await apiFetch(url, {
 		method: 'POST',
 		body: formData
 	});
@@ -167,7 +250,7 @@ export async function deleteFileSystemItem(requestedPath: string) {
 	const url = new URL('/api/files', apiBaseUrl);
 	url.searchParams.set('path', requestedPath);
 
-	const response = await fetch(url, {
+	const response = await apiFetch(url, {
 		method: 'DELETE'
 	});
 
@@ -180,7 +263,7 @@ export async function deleteFileSystemItem(requestedPath: string) {
 
 export async function renameFileSystemItem(requestedPath: string, name: string) {
 	const url = new URL('/api/files/rename', apiBaseUrl);
-	const response = await fetch(url, {
+	const response = await apiFetch(url, {
 		method: 'PATCH',
 		headers: {
 			'content-type': 'application/json'
@@ -197,7 +280,7 @@ export async function renameFileSystemItem(requestedPath: string, name: string) 
 
 export async function moveFileSystemItem(requestedPath: string, destinationPath: string) {
 	const url = new URL('/api/files/move', apiBaseUrl);
-	const response = await fetch(url, {
+	const response = await apiFetch(url, {
 		method: 'PATCH',
 		headers: {
 			'content-type': 'application/json'
@@ -213,19 +296,19 @@ export async function moveFileSystemItem(requestedPath: string, destinationPath:
 }
 
 export function getFileBlobUrl(requestedPath: string) {
-	const url = new URL('/api/files/blob', apiBaseUrl);
+	const url = withAuthQuery(new URL('/api/files/blob', apiBaseUrl));
 	url.searchParams.set('path', requestedPath);
 	return url.toString();
 }
 
 export function getDownloadUrl(requestedPath: string) {
-	const url = new URL('/api/files/download', apiBaseUrl);
+	const url = withAuthQuery(new URL('/api/files/download', apiBaseUrl));
 	url.searchParams.set('path', requestedPath);
 	return url.toString();
 }
 
 export function getTerminalSocketUrl(options: { cwd?: string }) {
-	const url = new URL('/api/terminal/socket', apiBaseUrl);
+	const url = withAuthQuery(new URL('/api/terminal/socket', apiBaseUrl));
 
 	if (options.cwd) {
 		url.searchParams.set('cwd', options.cwd);
@@ -233,4 +316,94 @@ export function getTerminalSocketUrl(options: { cwd?: string }) {
 
 	url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
 	return url.toString();
+}
+
+export async function registerUser(username: string, password: string) {
+	const url = new URL('/api/auth/register', apiBaseUrl);
+	const response = await apiFetch(url, {
+		method: 'POST',
+		headers: {
+			'content-type': 'application/json'
+		},
+		body: JSON.stringify({ username, password })
+	});
+
+	if (!response.ok) {
+		await throwApiError(response, 'Unable to register user');
+	}
+
+	return (await response.json()) as AuthResponse;
+}
+
+export async function loginUser(username: string, password: string) {
+	const url = new URL('/api/auth/login', apiBaseUrl);
+	const response = await apiFetch(url, {
+		method: 'POST',
+		headers: {
+			'content-type': 'application/json'
+		},
+		body: JSON.stringify({ username, password })
+	});
+
+	if (!response.ok) {
+		await throwApiError(response, 'Unable to log in');
+	}
+
+	return (await response.json()) as AuthResponse;
+}
+
+export async function getCurrentSession() {
+	const url = new URL('/api/auth/me', apiBaseUrl);
+	const response = await apiFetch(url);
+
+	if (!response.ok) {
+		await throwApiError(response, 'Unable to load current session');
+	}
+
+	return (await response.json()) as CurrentSessionResponse;
+}
+
+export async function getAdminUsers() {
+	const url = new URL('/api/admin/users', apiBaseUrl);
+	const response = await apiFetch(url);
+
+	if (!response.ok) {
+		await throwApiError(response, 'Unable to load users');
+	}
+
+	return (await response.json()) as { users: AdminUser[] };
+}
+
+export async function savePermission(userId: number, path: string, level: 'read' | 'write') {
+	const url = new URL('/api/admin/permissions', apiBaseUrl);
+	const response = await apiFetch(url, {
+		method: 'PUT',
+		headers: {
+			'content-type': 'application/json'
+		},
+		body: JSON.stringify({ userId, path, level })
+	});
+
+	if (!response.ok) {
+		await throwApiError(response, 'Unable to save permission');
+	}
+
+	return (await response.json()) as UserPermission;
+}
+
+export async function deletePermission(id: number) {
+	const url = new URL('/api/admin/permissions', apiBaseUrl);
+	const response = await apiFetch(url, {
+		method: 'DELETE',
+		headers: {
+			'content-type': 'application/json'
+		},
+		body: JSON.stringify({ id })
+	});
+
+	if (!response.ok) {
+		await throwApiError(response, 'Unable to delete permission');
+	}
+
+	return (await response.json()) as { deleted: true };
 }

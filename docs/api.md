@@ -14,6 +14,70 @@ Response:
 }
 ```
 
+### `POST /api/auth/register`
+
+Creates a new user and returns a JWT.
+
+Request body:
+
+```json
+{
+  "username": "admin",
+  "password": "secret-pass"
+}
+```
+
+Behavior notes:
+
+- The first registered user becomes the `admin`
+- Later registrations default to the `user` role
+
+### `POST /api/auth/login`
+
+Authenticates a user and returns a JWT.
+
+### `GET /api/auth/me`
+
+Returns the current authenticated user and their explicit permission rows.
+
+Behavior notes:
+
+- Requires `Authorization: Bearer <token>` or `token` query parameter
+
+### `GET /api/admin/users`
+
+Returns all users with their assigned permission rows.
+
+Behavior notes:
+
+- Requires an authenticated admin user
+
+### `PUT /api/admin/permissions`
+
+Creates or updates a permission row.
+
+Request body:
+
+```json
+{
+  "userId": 2,
+  "path": "D:/node/projects",
+  "level": "write"
+}
+```
+
+### `DELETE /api/admin/permissions`
+
+Deletes a permission row by id.
+
+Request body:
+
+```json
+{
+  "id": 4
+}
+```
+
 ### `GET /api/files?path=/...`
 
 Lists a directory on the host filesystem.
@@ -27,6 +91,8 @@ Behavior notes:
 - On Windows, `path=/` returns the available drive roots, for example `C:/` and `D:/`
 - On Windows, child directory requests use absolute paths such as `C:/Users`
 - The response includes `parentPath` so the client can navigate upward safely
+- All file routes require a valid JWT
+- Non-admin users only see their explicit permission roots at `path=/`
 
 Success response:
 

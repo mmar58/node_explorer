@@ -14,6 +14,8 @@ The repository currently contains the first end-to-end slice:
 Implemented now:
 
 - Fastify server scaffold with TypeScript
+- MySQL-backed users and path permissions via Knex
+- Registration, login, JWT session restore, and admin permission management
 - `GET /api/health`
 - `GET /api/files?path=/...`
 - `GET /api/files/content?path=/...`
@@ -24,13 +26,12 @@ Implemented now:
 - `POST /api/files/upload?path=/...`
 - `GET /api/terminal/socket` websocket endpoint backed by a PTY
 - Absolute-path browsing across the serving machine
-- Windows drive listing at `/` with parent-path aware navigation
+- Windows drive listing at `/` with parent-path aware navigation for admins and permission-root listing for non-admin users
 - Browser UI on the client home page with directory navigation, editor tabs, media/archive previews, upload/download actions, and terminal access
 
 Planned next:
 
-- Auth and permissions
-- File actions: stat, mkdir, rename, move, copy, delete
+- Additional file actions: stat, mkdir, copy
 - Resumable remote fetch from URL
 - Admin panel, archive extraction, richer permission-aware file actions, and terminal/editor workflows
 
@@ -97,6 +98,8 @@ The backend currently supports these environment variables:
 
 - `PORT`: backend port, defaults to `3001`
 - `HOST`: backend host, defaults to `127.0.0.1`
+- `JWT_SECRET`: backend JWT signing secret
+- `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`: MySQL connection settings for Knex-backed auth and permissions
 - `PUBLIC_API_BASE_URL`: optional client-side API base URL, defaults to `http://127.0.0.1:3001`
 
 ## Documentation
@@ -109,6 +112,6 @@ The backend currently supports these environment variables:
 
 ## Notes
 
-- The current implementation is still intentionally narrow: browsing, typed previews, upload/download, UTF-8 text-file editing up to 1 MB, and one PTY-backed terminal view, validated end to end.
+- The current implementation now includes registration, login, JWT-based protected routes, per-path permission checks, and an admin permission UI in addition to browsing, previews, upload/download, text-file editing, and the PTY-backed terminal.
 - The broader product scope is tracked in `Instructions.md` and summarized in `docs/roadmap.md`.
 - Use pnpm only. Do not mix npm or yarn into this workspace.

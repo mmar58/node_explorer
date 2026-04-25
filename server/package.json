@@ -6,21 +6,30 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node --import tsx --test src/**/*.test.ts"
   },
   "dependencies": {
     "@fastify/cors": "^11.1.0",
+    "@fastify/jwt": "^10.0.0",
     "@fastify/multipart": "^10.0.0",
     "@fastify/websocket": "^11.2.0",
     "adm-zip": "^0.5.17",
     "archiver": "^7.0.1",
+    "bcrypt": "^6.0.0",
+    "bcryptjs": "^3.0.3",
+    "dotenv": "^17.2.3",
     "fastify": "^5.6.1",
+    "fastify-plugin": "^5.1.0",
+    "knex": "^3.2.9",
     "mime-types": "^3.0.2",
+    "mysql2": "^3.22.2",
     "node-pty": "^1.1.0"
   },
   "devDependencies": {
     "@types/adm-zip": "^0.5.8",
     "@types/archiver": "^7.0.0",
+    "@types/bcrypt": "^6.0.0",
     "@types/mime-types": "^3.0.1",
     "@types/node": "^24.9.1",
     "tsx": "^4.20.6",
