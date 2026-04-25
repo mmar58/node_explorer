@@ -30,17 +30,21 @@
 	import Terminal from '$lib/components/Terminal.svelte';
 	import ToastStack from '$lib/components/ToastStack.svelte';
 	import {
+		deleteFileSystemItem,
 		DirectoryRequestError,
 		getArchivePreview,
 		getDirectoryListing,
 		getDownloadUrl,
 		getFileBlobUrl,
 		getTextFileContent,
+		moveFileSystemItem,
+		renameFileSystemItem,
 		saveTextFileContent,
 		uploadFilesToDirectory,
 		type ArchiveEntry,
 		type FileContent,
 		type FileEntry,
+		type FileOperationResult,
 		type UploadItem
 	} from '$lib/api';
 
@@ -113,6 +117,7 @@
 	let fileUploadInput: HTMLInputElement;
 	let folderUploadInput: HTMLInputElement;
 	let uploadTargetPath = '/';
+	let dragTargetPath = '';
 
 	const imageExtensions = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'avif', 'ico']);
 	const videoExtensions = new Set(['mp4', 'webm', 'mov', 'm4v', 'avi', 'mkv']);
@@ -271,6 +276,73 @@
 		}
 
 		return `${size.toFixed(size >= 10 ? 0 : 1)} ${units[index]}`;
+	}
+
+	function isAffectedPath(candidatePath: string, targetPath: string) {
+		return candidatePath === targetPath || candidatePath.startsWith(`${targetPath}/`);
+	}
+
+	function remapPath(candidatePath: string, fromPath: string, toPath: string) {
+		if (candidatePath === fromPath) {
+			return toPath;
+		}
+
+		if (candidatePath.startsWith(`${fromPath}/`)) {
+			return `${toPath}${candidatePath.slice(fromPath.length)}`;
+		}
+
+		return candidatePath;
+	}
+
+	function syncPathsAfterMutation(fromPath: string, result: FileOperationResult) {
+		openTabs = openTabs.map((tab) => {
+			const nextPath = remapPath(tab.path, fromPath, result.path);
+
+			if (nextPath === tab.path) {
+				return tab;
+			}
+
+			return {
+				...tab,
+				path: nextPath,
+				name: nextPath.split('/').at(-1) ?? tab.name
+			};
+		});
+
+		activeTabPath = remapPath(activeTabPath, fromPath, result.path);
+		selectedFilePath = remapPath(selectedFilePath, fromPath, result.path);
+
+		if (previewState.isOpen) {
+			const previewPath = selectedFilePath;
+
+			if (isAffectedPath(previewPath, result.path) || isAffectedPath(previewPath, fromPath)) {
+				previewState = { ...previewState, isOpen: false };
+			}
+		}
+	}
+
+	function clearDeletedPath(targetPath: string) {
+		openTabs = openTabs.filter((tab) => !isAffectedPath(tab.path, targetPath));
+
+		if (isAffectedPath(activeTabPath, targetPath)) {
+			activeTabPath = openTabs.at(-1)?.path ?? '';
+		}
+
+		if (isAffectedPath(selectedFilePath, targetPath)) {
+			selectedFilePath = activeTabPath;
+		}
+
+		if (previewState.isOpen && isAffectedPath(selectedFilePath, targetPath)) {
+			previewState = { ...previewState, isOpen: false };
+		}
+	}
+
+	function hasFileDragPayload(event: DragEvent) {
+		return Array.from(event.dataTransfer?.types ?? []).includes('Files');
+	}
+
+	function clearDragState() {
+		dragTargetPath = '';
 	}
 
 	function getPathSegments(currentPath: string) {
@@ -516,7 +588,7 @@
 		folderUploadInput.click();
 	}
 
-	async function uploadSelectedFiles(files: FileList | null, isFolderUpload: boolean) {
+	async function uploadSelectedFiles(destinationPath: string, files: FileList | null, isFolderUpload: boolean) {
 		if (!files || files.length === 0) {
 			return;
 		}
@@ -534,12 +606,13 @@
 		});
 
 		try {
-			const result = await uploadFilesToDirectory(uploadTargetPath, items);
+			const result = await uploadFilesToDirectory(destinationPath, items);
 			pushToast(
 				'Upload complete',
 				`${result.uploaded.length} item${result.uploaded.length === 1 ? '' : 's'} uploaded successfully.`,
 				'info'
 			);
+			clearDragState();
 			await loadDirectory(listing.currentPath);
 		} catch (error) {
 			pushToast('Upload failed', error instanceof Error ? error.message : 'Unable to upload files');
@@ -548,18 +621,105 @@
 
 	function handleFileInputChange(event: Event) {
 		const input = event.currentTarget as HTMLInputElement;
-		void uploadSelectedFiles(input.files, false);
+		void uploadSelectedFiles(uploadTargetPath, input.files, false);
 	}
 
 	function handleFolderInputChange(event: Event) {
 		const input = event.currentTarget as HTMLInputElement;
-		void uploadSelectedFiles(input.files, true);
+		void uploadSelectedFiles(uploadTargetPath, input.files, true);
+	}
+
+	function handleDragOver(event: DragEvent, destinationPath: string) {
+		if (!hasFileDragPayload(event)) {
+			return;
+		}
+
+		event.preventDefault();
+		dragTargetPath = destinationPath;
+	}
+
+	function handleDragLeave(event: DragEvent, destinationPath: string) {
+		const nextTarget = event.relatedTarget;
+
+		if (nextTarget instanceof Node && (event.currentTarget as Node | null)?.contains(nextTarget)) {
+			return;
+		}
+
+		if (dragTargetPath === destinationPath) {
+			clearDragState();
+		}
+	}
+
+	async function handleDropUpload(event: DragEvent, destinationPath: string) {
+		if (!hasFileDragPayload(event)) {
+			return;
+		}
+
+		event.preventDefault();
+		const files = event.dataTransfer?.files ?? null;
+		await uploadSelectedFiles(destinationPath, files, false);
+	}
+
+	async function renameEntry(entry: FileEntry) {
+		const requestedName = window.prompt(`Rename ${entry.name} to:`, entry.name)?.trim();
+
+		if (!requestedName || requestedName === entry.name) {
+			return;
+		}
+
+		try {
+			const result = await renameFileSystemItem(entry.path, requestedName);
+			syncPathsAfterMutation(entry.path, result);
+			pushToast('Item renamed', `${entry.name} was renamed to ${result.name}.`, 'info');
+			await loadDirectory(listing.currentPath);
+		} catch (error) {
+			pushToast('Rename failed', error instanceof Error ? error.message : 'Unable to rename item');
+		}
+	}
+
+	async function moveEntry(entry: FileEntry) {
+		const destinationPath = window
+			.prompt(`Move ${entry.name} to absolute destination folder:`, listing.currentPath)
+			?.trim();
+
+		if (!destinationPath) {
+			return;
+		}
+
+		try {
+			const result = await moveFileSystemItem(entry.path, destinationPath);
+			syncPathsAfterMutation(entry.path, result);
+			pushToast('Item moved', `${entry.name} was moved to ${destinationPath}.`, 'info');
+			await loadDirectory(listing.currentPath);
+		} catch (error) {
+			pushToast('Move failed', error instanceof Error ? error.message : 'Unable to move item');
+		}
+	}
+
+	async function deleteEntry(entry: FileEntry) {
+		const confirmed = window.confirm(`Delete ${entry.name}? This cannot be undone.`);
+
+		if (!confirmed) {
+			return;
+		}
+
+		try {
+			await deleteFileSystemItem(entry.path);
+			clearDeletedPath(entry.path);
+			pushToast('Item deleted', `${entry.name} was removed.`, 'info');
+			await loadDirectory(listing.currentPath);
+		} catch (error) {
+			pushToast('Delete failed', error instanceof Error ? error.message : 'Unable to delete item');
+		}
 	}
 
 	function getContextActions(entry: FileEntry) {
 		const baseActions = [
 			{ id: 'open', label: entry.type === 'directory' ? 'Open folder' : 'Open' },
-			{ id: 'download', label: entry.type === 'directory' ? 'Download folder (.zip)' : 'Download file' }
+			{ id: 'download', label: entry.type === 'directory' ? 'Download folder (.zip)' : 'Download file' },
+			{ id: 'rename', label: 'Rename' },
+			{ id: 'move', label: 'Move' },
+			{ id: 'delete', label: 'Delete' }
 		];
 
 		if (entry.type === 'directory') {
@@ -613,6 +773,15 @@
 			case 'upload-folder':
 				triggerUploadFolder(entry.type === 'directory' ? entry.path : listing.currentPath);
 				return;
+			case 'rename':
+				await renameEntry(entry);
+				return;
+			case 'move':
+				await moveEntry(entry);
+				return;
+			case 'delete':
+				await deleteEntry(entry);
+				return;
 		}
 	}
 
@@ -656,6 +825,8 @@
 
 		window.addEventListener('click', handleWindowClick);
 		window.addEventListener('keydown', handleEscape);
+		window.addEventListener('dragend', clearDragState);
+		window.addEventListener('drop', clearDragState);
 
 		void loadDirectory();
 		openTerminalHere();
@@ -664,6 +835,8 @@
 		return () => {
 			window.removeEventListener('click', handleWindowClick);
 			window.removeEventListener('keydown', handleEscape);
+			window.removeEventListener('dragend', clearDragState);
+			window.removeEventListener('drop', clearDragState);
 		};
 	});
 </script>
@@ -775,20 +948,37 @@
 			{#if isLoading}
 				<p class="notice">Loading directory contents...</p>
 			{:else if filteredEntries.length === 0}
-				<p class="notice">
+				<p
+					class="notice"
+					class:drop-target={dragTargetPath === listing.currentPath}
+					ondragover={(event) => handleDragOver(event, listing.currentPath)}
+					ondragleave={(event) => handleDragLeave(event, listing.currentPath)}
+					ondrop={(event) => handleDropUpload(event, listing.currentPath)}
+				>
 					{filterQuery ? 'No items match the current filter.' : 'This directory is empty.'}
 				</p>
 			{:else}
-				<div class="explorer-list" role="list">
+				<div
+					class="explorer-list"
+					class:drop-target={dragTargetPath === listing.currentPath}
+					role="list"
+					ondragover={(event) => handleDragOver(event, listing.currentPath)}
+					ondragleave={(event) => handleDragLeave(event, listing.currentPath)}
+					ondrop={(event) => handleDropUpload(event, listing.currentPath)}
+				>
 					{#each filteredEntries as entry (entry.path)}
 						<button
 							type="button"
 							class="item-card"
 							class:selected={entry.path === selectedFilePath}
 							class:directory={entry.type === 'directory'}
+							class:drop-target={entry.type === 'directory' && dragTargetPath === entry.path}
 							class:restricted={!entry.isAccessible}
 							onclick={() => openEntry(entry)}
 							oncontextmenu={(event) => openContextMenu(event, entry)}
+							ondragover={(event) => entry.type === 'directory' && handleDragOver(event, entry.path)}
+							ondragleave={(event) => entry.type === 'directory' && handleDragLeave(event, entry.path)}
+							ondrop={(event) => entry.type === 'directory' && handleDropUpload(event, entry.path)}
 						>
 							<div class="item-main">
 								<div class="item-icon">
@@ -846,6 +1036,15 @@
 						<button type="button" class="ghost compact" onclick={() => downloadItem(selectedEntry.path)}>
 							<Download size={15} />
 							Download
+						</button>
+						<button type="button" class="ghost compact" onclick={() => renameEntry(selectedEntry)}>
+							Rename
+						</button>
+						<button type="button" class="ghost compact" onclick={() => moveEntry(selectedEntry)}>
+							Move
+						</button>
+						<button type="button" class="ghost compact danger" onclick={() => deleteEntry(selectedEntry)}>
+							Delete
 						</button>
 					{/if}
 					{#if activeTab}
@@ -1156,6 +1355,12 @@
 		border-color: rgba(65, 188, 132, 0.22);
 	}
 
+	button.danger {
+		color: #ffd9d6;
+		background: rgba(138, 39, 39, 0.2);
+		border: 1px solid rgba(220, 98, 98, 0.24);
+	}
+
 	button:disabled {
 		opacity: 0.5;
 		cursor: not-allowed;
@@ -1208,6 +1413,12 @@
 		padding-right: 4px;
 	}
 
+	.explorer-list.drop-target,
+	.notice.drop-target {
+		outline: 2px dashed rgba(111, 213, 171, 0.75);
+		outline-offset: 6px;
+	}
+
 	.item-card {
 		width: 100%;
 		display: flex;
@@ -1230,6 +1441,11 @@
 
 	.item-card.directory {
 		background: linear-gradient(145deg, rgba(20, 47, 85, 0.95), rgba(17, 30, 48, 0.95));
+	}
+
+	.item-card.drop-target {
+		border-color: rgba(111, 213, 171, 0.8);
+		box-shadow: inset 0 0 0 1px rgba(111, 213, 171, 0.3);
 	}
 
 	.item-card.restricted {

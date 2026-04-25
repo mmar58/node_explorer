@@ -31,6 +31,14 @@ export type SavedFileContent = {
 	modifiedAt: string;
 };
 
+export type FileOperationResult = {
+	path: string;
+	name: string;
+	type: 'file' | 'directory';
+	size: number;
+	modifiedAt: string;
+};
+
 export type ArchiveEntry = {
 	path: string;
 	type: 'file' | 'directory';
@@ -153,6 +161,55 @@ export async function uploadFilesToDirectory(destinationPath: string, items: Upl
 	}
 
 	return (await response.json()) as { uploaded: Array<{ path: string; name: string }> };
+}
+
+export async function deleteFileSystemItem(requestedPath: string) {
+	const url = new URL('/api/files', apiBaseUrl);
+	url.searchParams.set('path', requestedPath);
+
+	const response = await fetch(url, {
+		method: 'DELETE'
+	});
+
+	if (!response.ok) {
+		await throwApiError(response, 'Unable to delete item');
+	}
+
+	return (await response.json()) as { path: string; deleted: true };
+}
+
+export async function renameFileSystemItem(requestedPath: string, name: string) {
+	const url = new URL('/api/files/rename', apiBaseUrl);
+	const response = await fetch(url, {
+		method: 'PATCH',
+		headers: {
+			'content-type': 'application/json'
+		},
+		body: JSON.stringify({ path: requestedPath, name })
+	});
+
+	if (!response.ok) {
+		await throwApiError(response, 'Unable to rename item');
+	}
+
+	return (await response.json()) as FileOperationResult;
+}
+
+export async function moveFileSystemItem(requestedPath: string, destinationPath: string) {
+	const url = new URL('/api/files/move', apiBaseUrl);
+	const response = await fetch(url, {
+		method: 'PATCH',
+		headers: {
+			'content-type': 'application/json'
+		},
+		body: JSON.stringify({ path: requestedPath, destinationPath })
+	});
+
+	if (!response.ok) {
+		await throwApiError(response, 'Unable to move item');
+	}
+
+	return (await response.json()) as FileOperationResult;
 }
 
 export function getFileBlobUrl(requestedPath: string) {

@@ -125,6 +125,21 @@ function normalizeRequiredAbsolutePath(requestedPath?: string) {
 	return absolutePath;
 }
 
+function isFilesystemRoot(absolutePath: string) {
+	const pathModule = getPathModule();
+	const normalizedPath = pathModule.normalize(absolutePath);
+	const parsedPath = pathModule.parse(normalizedPath);
+	return normalizedPath === parsedPath.root;
+}
+
+function ensureMutablePath(absolutePath: string) {
+	if (isFilesystemRoot(absolutePath)) {
+		throw new FileServiceError('Filesystem root paths cannot be modified', 400);
+	}
+
+	return absolutePath;
+}
+
 function getParentPath(currentPath: string) {
 	if (currentPath === '/') {
 		return null;
@@ -238,6 +253,51 @@ async function ensureDirectory(absolutePath: string) {
 	}
 
 	return absolutePath;
+}
+
+function normalizeReplacementName(nextName: string) {
+	const trimmedName = nextName.trim();
+
+	if (!trimmedName || trimmedName === '.' || trimmedName === '..') {
+		throw new FileServiceError('The replacement name is invalid', 400);
+	}
+
+	if (trimmedName.includes('/') || trimmedName.includes('\\')) {
+		throw new FileServiceError('The replacement name must not include path separators', 400);
+	}
+
+	return trimmedName;
+}
+
+async function ensureTargetDoesNotExist(absolutePath: string) {
+	try {
+		await fs.access(absolutePath);
+		throw new FileServiceError('A file or directory already exists at the destination path', 409);
+	} catch (error) {
+		if (typeof error === 'object' && error && 'code' in error && error.code === 'ENOENT') {
+			return;
+		}
+
+		if (error instanceof FileServiceError) {
+			throw error;
+		}
+
+		if (isPermissionError(error)) {
+			throw new FileServiceError('Permission denied for requested path', 403);
+		}
+
+		throw error;
+	}
+}
+
+function toFileOperationResult(absolutePath: string, stats: Awaited<ReturnType<typeof statPath>>) {
+	return {
+		path: formatApiPath(absolutePath),
+		name: path.basename(absolutePath),
+		type: stats.isDirectory() ? 'directory' : 'file',
+		size: stats.size,
+		modifiedAt: stats.mtime.toISOString()
+	} as const;
 }
 
 async function statChildEntry(childAbsolutePath: string, child: Awaited<ReturnType<typeof readDirectoryEntries>>[number]) {
@@ -473,4 +533,87 @@ export async function resolveUploadDestination(requestedDirectoryPath: string, r
 		path: formatApiPath(absoluteDestinationPath),
 		name: path.basename(absoluteDestinationPath)
 	};
+}
+
+export async function deletePath(requestedPath: string) {
+	const absolutePath = ensureMutablePath(normalizeRequiredAbsolutePath(requestedPath));
+	await statPath(absolutePath);
+
+	try {
+		await fs.rm(absolutePath, { recursive: true, force: false });
+	} catch (error) {
+		if (isPermissionError(error)) {
+			throw new FileServiceError('Permission denied for requested path', 403);
+		}
+
+		throw error;
+	}
+
+	return {
+		path: formatApiPath(absolutePath),
+		deleted: true
+	};
+}
+
+export async function renamePath(requestedPath: string, nextName: string) {
+	const absolutePath = ensureMutablePath(normalizeRequiredAbsolutePath(requestedPath));
+	const stats = await statPath(absolutePath);
+	const normalizedName = normalizeReplacementName(nextName);
+	const pathModule = getPathModule();
+	const parentDirectory = pathModule.dirname(absolutePath);
+	const renamedAbsolutePath = pathModule.join(parentDirectory, normalizedName);
+
+	if (pathModule.normalize(renamedAbsolutePath) === pathModule.normalize(absolutePath)) {
+		return toFileOperationResult(absolutePath, stats);
+	}
+
+	await ensureTargetDoesNotExist(renamedAbsolutePath);
+
+	try {
+		await fs.rename(absolutePath, renamedAbsolutePath);
+	} catch (error) {
+		if (isPermissionError(error)) {
+			throw new FileServiceError('Permission denied for requested path', 403);
+		}
+
+		throw error;
+	}
+
+	const updatedStats = await statPath(renamedAbsolutePath);
+	return toFileOperationResult(renamedAbsolutePath, updatedStats);
+}
+
+export async function movePath(requestedPath: string, requestedDestinationDirectoryPath: string) {
+	const absolutePath = ensureMutablePath(normalizeRequiredAbsolutePath(requestedPath));
+	const stats = await statPath(absolutePath);
+	const destinationDirectory = await ensureDirectory(
+		ensureMutablePath(normalizeRequiredAbsolutePath(requestedDestinationDirectoryPath))
+	);
+	const pathModule = getPathModule();
+	const destinationAbsolutePath = pathModule.join(destinationDirectory, pathModule.basename(absolutePath));
+
+	if (pathModule.normalize(destinationAbsolutePath) === pathModule.normalize(absolutePath)) {
+		return toFileOperationResult(absolutePath, stats);
+	}
+
+	const relativeToSource = pathModule.relative(absolutePath, destinationDirectory);
+
+	if (!relativeToSource || (!relativeToSource.startsWith('..') && !pathModule.isAbsolute(relativeToSource))) {
+		throw new FileServiceError('Cannot move an item into itself or one of its descendants', 400);
+	}
+
+	await ensureTargetDoesNotExist(destinationAbsolutePath);
+
+	try {
+		await fs.rename(absolutePath, destinationAbsolutePath);
+	} catch (error) {
+		if (isPermissionError(error)) {
+			throw new FileServiceError('Permission denied for requested path', 403);
+		}
+
+		throw error;
+	}
+
+	const updatedStats = await statPath(destinationAbsolutePath);
+	return toFileOperationResult(destinationAbsolutePath, updatedStats);
 }

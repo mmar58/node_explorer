@@ -7,12 +7,15 @@ import type { FastifyPluginAsync } from 'fastify';
 import mime from 'mime-types';
 
 import {
+	deletePath,
 	FileServiceError,
 	getArchivePreview,
 	getDownloadTarget,
 	getFileStreamTarget,
 	listDirectory,
+	movePath,
 	readTextFile,
+	renamePath,
 	resolveUploadDestination,
 	writeTextFile
 } from '../services/fs.js';
@@ -213,6 +216,71 @@ export const fileRoutes: FastifyPluginAsync = async (app) => {
 			}
 
 			const message = error instanceof Error ? error.message : 'Unable to upload files';
+			return reply.code(500).send({ error: message });
+		}
+	});
+
+	app.delete<{ Querystring: { path?: string } }>('/api/files', async (request, reply) => {
+		try {
+			const requestedPath = request.query.path;
+
+			if (!requestedPath) {
+				return reply.code(400).send({ error: 'The path query parameter is required' });
+			}
+
+			return await deletePath(requestedPath);
+		} catch (error) {
+			if (error instanceof FileServiceError) {
+				return reply.code(error.statusCode).send({ error: error.message });
+			}
+
+			const message = error instanceof Error ? error.message : 'Unable to delete item';
+			return reply.code(500).send({ error: message });
+		}
+	});
+
+	app.patch<{ Body: { path?: string; name?: string } }>('/api/files/rename', async (request, reply) => {
+		try {
+			const requestedPath = request.body.path;
+
+			if (!requestedPath) {
+				return reply.code(400).send({ error: 'The path field is required' });
+			}
+
+			if (typeof request.body.name !== 'string') {
+				return reply.code(400).send({ error: 'The name field must be a string' });
+			}
+
+			return await renamePath(requestedPath, request.body.name);
+		} catch (error) {
+			if (error instanceof FileServiceError) {
+				return reply.code(error.statusCode).send({ error: error.message });
+			}
+
+			const message = error instanceof Error ? error.message : 'Unable to rename item';
+			return reply.code(500).send({ error: message });
+		}
+	});
+
+	app.patch<{ Body: { path?: string; destinationPath?: string } }>('/api/files/move', async (request, reply) => {
+		try {
+			const requestedPath = request.body.path;
+
+			if (!requestedPath) {
+				return reply.code(400).send({ error: 'The path field is required' });
+			}
+
+			if (typeof request.body.destinationPath !== 'string') {
+				return reply.code(400).send({ error: 'The destinationPath field must be a string' });
+			}
+
+			return await movePath(requestedPath, request.body.destinationPath);
+		} catch (error) {
+			if (error instanceof FileServiceError) {
+				return reply.code(error.statusCode).send({ error: error.message });
+			}
+
+			const message = error instanceof Error ? error.message : 'Unable to move item';
 			return reply.code(500).send({ error: message });
 		}
 	});

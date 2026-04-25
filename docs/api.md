@@ -151,6 +151,108 @@ Behavior notes:
 - Folder uploads are supported by sending relative file names such as `photos/2026/a.jpg`
 - The server rejects relative paths that escape the requested destination directory
 
+### `DELETE /api/files?path=/...`
+
+Deletes a file or directory from the host filesystem.
+
+Behavior notes:
+
+- Directories are removed recursively
+- Filesystem roots such as `/` or `C:/` are rejected and cannot be deleted
+
+Success response:
+
+```json
+{
+  "path": "D:/node/node_explorer/tmp/example.txt",
+  "deleted": true
+}
+```
+
+Error behavior:
+
+- Returns `400` for invalid paths or attempts to delete filesystem roots
+- Returns `403` when the process lacks permission to remove the item
+- Returns `404` when the requested path does not exist
+- Returns `500` for other unexpected failures
+
+### `PATCH /api/files/rename`
+
+Renames a file or directory within its current parent directory.
+
+Request body:
+
+```json
+{
+  "path": "D:/node/node_explorer/tmp/example.txt",
+  "name": "renamed.txt"
+}
+```
+
+Behavior notes:
+
+- The `name` field must be a single basename, not a path
+- The endpoint rejects collisions when another item already exists with the requested name
+
+Success response:
+
+```json
+{
+  "path": "D:/node/node_explorer/tmp/renamed.txt",
+  "name": "renamed.txt",
+  "type": "file",
+  "size": 128,
+  "modifiedAt": "2026-04-25T10:20:00.000Z"
+}
+```
+
+Error behavior:
+
+- Returns `400` for invalid request bodies, invalid names, or attempts to rename filesystem roots
+- Returns `403` when the process lacks permission to rename the item
+- Returns `404` when the requested path does not exist
+- Returns `409` when the destination name already exists
+- Returns `500` for other unexpected failures
+
+### `PATCH /api/files/move`
+
+Moves a file or directory into another existing directory.
+
+Request body:
+
+```json
+{
+  "path": "D:/node/node_explorer/tmp/example.txt",
+  "destinationPath": "D:/node/node_explorer/archive"
+}
+```
+
+Behavior notes:
+
+- `destinationPath` must be an existing absolute directory path
+- The moved item keeps its current basename in the destination directory
+- The endpoint rejects moves into the same path, into descendants of the source directory, or into an occupied destination path
+
+Success response:
+
+```json
+{
+  "path": "D:/node/node_explorer/archive/example.txt",
+  "name": "example.txt",
+  "type": "file",
+  "size": 128,
+  "modifiedAt": "2026-04-25T10:22:00.000Z"
+}
+```
+
+Error behavior:
+
+- Returns `400` for invalid request bodies, invalid destination directories, protected root paths, or self/descendant moves
+- Returns `403` when the process lacks permission to move the item
+- Returns `404` when the source path does not exist
+- Returns `409` when the destination path already exists
+- Returns `500` for other unexpected failures
+
 ### `PUT /api/files/content`
 
 Writes UTF-8 text content back to an existing file.
