@@ -2,12 +2,13 @@
 
 Node Explorer is a self-hosted server file manager built with SvelteKit and Node.js. The target product includes file browsing, upload and download, resumable remote fetch from URL, terminal access, code editing, zip and unzip, and per-folder access control.
 
-The repository currently contains the first end-to-end slice:
+The repository currently contains a working vertical slice:
 
 - A Svelte client in `client/`
 - A Fastify server in `server/`
-- Working filesystem browsing plus file preview, upload, download, and UTF-8 text-file edit endpoints
-- A browser workspace UI with typed opening, editor tabs, popup previews, context menus, and an embedded terminal
+- Working filesystem browsing plus file preview, upload, download, upload drag-drop, rename, move, delete, and UTF-8 text-file edit endpoints
+- A browser workspace UI with typed opening, editor tabs, popup previews, context menus, toasts, and an embedded terminal
+- Registration/login plus JWT-protected APIs and per-path permissions backed by MySQL
 
 ## Current Status
 
@@ -25,6 +26,15 @@ Implemented now:
 - `GET /api/files/archive?path=/...`
 - `POST /api/files/upload?path=/...`
 - `GET /api/terminal/socket` websocket endpoint backed by a PTY
+- `POST /api/auth/register`
+- `POST /api/auth/login`
+- `GET /api/auth/me`
+- `GET /api/admin/users`
+- `PUT /api/admin/permissions`
+- `DELETE /api/admin/permissions`
+- `DELETE /api/files?path=/...`
+- `PATCH /api/files/rename`
+- `PATCH /api/files/move`
 - Absolute-path browsing across the serving machine
 - Windows drive listing at `/` with parent-path aware navigation for admins and permission-root listing for non-admin users
 - Browser UI on the client home page with directory navigation, editor tabs, media/archive previews, upload/download actions, and terminal access
@@ -33,14 +43,15 @@ Planned next:
 
 - Additional file actions: stat, mkdir, copy
 - Resumable remote fetch from URL
-- Admin panel, archive extraction, richer permission-aware file actions, and terminal/editor workflows
+- Archive extraction and broader archive operations
 
 ## Tech Stack
 
 - Frontend: SvelteKit 5, Tailwind CSS v4, shadcn-svelte, Lucide
-- Backend: Node.js, TypeScript, Fastify
+- Backend: Node.js, TypeScript, Fastify, Knex, MySQL
 - Current browser tools: Monaco Editor, xterm.js, node-pty, Fastify websocket
-- Database plan: MySQL via Knex, plus SQLite for instant job and transfer state
+- Database now: MySQL via Knex for users and permissions
+- Database plan: SQLite for instant job and transfer state
 - Realtime plan: Socket.IO
 - File transfer plan: busboy, tus, range-aware downloads
 - Terminal plan: permission-aware sessions and richer multi-tab management on top of the current PTY slice
@@ -76,13 +87,13 @@ pnpm --dir server install
 In one terminal:
 
 ```bash
-pnpm dev:server
+pnpm server
 ```
 
 In another terminal:
 
 ```bash
-pnpm dev:client
+pnpm client
 ```
 
 ### Check
@@ -90,6 +101,12 @@ pnpm dev:client
 ```bash
 pnpm check:server
 pnpm check:client
+```
+
+### Tests
+
+```bash
+pnpm test:server
 ```
 
 ## Configuration

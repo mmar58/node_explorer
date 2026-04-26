@@ -31,6 +31,7 @@ Behavior notes:
 
 - The first registered user becomes the `admin`
 - Later registrations default to the `user` role
+- Password minimum length and complexity are currently not enforced
 
 ### `POST /api/auth/login`
 
@@ -394,16 +395,12 @@ These are part of the intended product design but are not implemented yet.
 
 ### Auth
 
-- `POST /api/auth/login`
 - `POST /api/auth/logout`
 
 ### File Operations
 
 - `GET /api/files/stat`
-- `POST /api/files/rename`
-- `POST /api/files/move`
 - `POST /api/files/copy`
-- `DELETE /api/files`
 - `POST /api/files/mkdir`
 
 ### Transfer
@@ -424,11 +421,9 @@ These are part of the intended product design but are not implemented yet.
 
 ### Admin
 
-- `GET /api/admin/users`
 - `POST /api/admin/users`
 - `DELETE /api/admin/users/:id`
 - `GET /api/admin/permissions`
-- `PUT /api/admin/permissions`
 - `GET /api/admin/requests`
 - `PUT /api/admin/requests/:id`
 

@@ -17,13 +17,12 @@ The source of truth for feature scope is `Instructions.md`.
 
 ## Current Implementation State
 
-The repository is early-stage.
+The repository is still evolving, but no longer limited to scaffolding.
 
-- `client/` contains the SvelteKit frontend
-- `server/` contains the Fastify backend scaffold
-- The implemented backend surface is currently limited to `GET /api/health` and `GET /api/files`
-- `GET /api/files` currently browses the host filesystem and lists drives at `/` on Windows
-- The client home page is a minimal file browser wired to `GET /api/files`
+- `client/` contains a SvelteKit workspace UI with auth, file browsing, editor tabs, previews, context actions, and terminal panel
+- `server/` contains a Fastify backend with MySQL-backed auth and permission checks
+- Implemented backend includes health, auth, admin permission management, protected file APIs, and terminal websocket access
+- Non-admin users are restricted to explicit permission roots at `/`
 
 Do not document planned features as implemented features.
 
@@ -46,10 +45,11 @@ When adding features, prefer this order unless the user asks otherwise:
 
 ## Commands
 
-- Root client dev: `pnpm dev:client`
-- Root server dev: `pnpm dev:server`
+- Root client dev: `pnpm client`
+- Root server dev: `pnpm server`
 - Root client check: `pnpm check:client`
 - Root server check: `pnpm check:server`
+- Root server tests: `pnpm test:server`
 
 ## Documentation Expectations
 

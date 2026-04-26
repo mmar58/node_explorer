@@ -19,13 +19,13 @@ pnpm --dir server install
 Backend:
 
 ```bash
-pnpm dev:server
+pnpm server
 ```
 
 Frontend:
 
 ```bash
-pnpm dev:client
+pnpm client
 ```
 
 ## Type Checks
@@ -33,6 +33,12 @@ pnpm dev:client
 ```bash
 pnpm check:server
 pnpm check:client
+```
+
+## Tests
+
+```bash
+pnpm test:server
 ```
 
 ## Environment Variables
@@ -70,5 +76,6 @@ After starting the frontend, the home page should first render the login or regi
 - Permissions are path-based and explicit; non-admin users do not automatically inherit global root access
 - The first registered user becomes the administrator automatically
 - Auth currently uses bearer tokens stored in browser local storage rather than httpOnly cookies
+- Password minimum length and complexity rules are not enforced yet
 
 Those are planned and tracked in `Instructions.md` and `docs/roadmap.md`.

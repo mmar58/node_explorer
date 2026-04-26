@@ -27,12 +27,20 @@ The client currently has:
 The server currently has:
 
 - `src/index.ts`: app bootstrap and route registration
-- `src/config.ts`: runtime host and port configuration
+- `src/config.ts`: runtime host, JWT, and MySQL configuration loaded from `server/.env`
+- `src/db/knex.ts`: Knex client setup and schema bootstrap/repair for `users` and `permissions`
 - `src/routes/health.ts`: liveness endpoint
+- `src/routes/auth.ts`: register, login, and current-session endpoints
+- `src/routes/admin.ts`: admin user/permission endpoints
 - `src/routes/files.ts`: directory listing plus preview, upload, download, archive, and text-file edit endpoints
 - `src/routes/terminal.ts`: websocket route for terminal sessions
+- `src/plugins/auth.ts`: JWT verification and route hooks (`authenticate`, `requireAdmin`)
 - `src/services/fs.ts`: host-filesystem directory reads, Windows drive discovery, parent-path calculation, upload-path validation, archive inspection, and text-file read/write helpers
 - `src/services/terminal.ts`: PTY session setup and working-directory validation
+- `src/services/auth.ts`: user registration/login, permission CRUD, and admin-facing listings
+- `src/services/permission.ts`: path normalization and per-path authorization checks
+
+The server also ships `server/schema.sql` for manual database bootstrap in environments where schema creation is preferred outside runtime startup.
 
 The current files API exposes the host filesystem. On Windows, the API uses a virtual `/` that lists available drive roots and then navigates using absolute paths such as `C:/Users`.
 
@@ -69,7 +77,7 @@ Target backend layers:
 
 ## Data Layer Plan
 
-- MySQL via Knex for durable application data
+- MySQL via Knex for users and path permissions
 - SQLite for local, high-frequency, resumable state such as transfer jobs and chunk offsets
 
 ## Security Model
