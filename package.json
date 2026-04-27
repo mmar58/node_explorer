@@ -4,11 +4,11 @@
   "description": "",
   "private": true,
   "scripts": {
-    "client": "pnpm --dir client dev",
-    "server": "pnpm --dir server dev",
-    "check:client": "pnpm --dir client check",
-    "check:server": "pnpm --dir server typecheck",
-    "test:server": "pnpm --dir server test"
+    "client": "cd client && pnpm dev",
+    "server": "cd server && pnpm dev",
+    "check:client": "cd client && pnpm check",
+    "check:server": "cd server && pnpm typecheck",
+    "test:server": "cd server && pnpm test"
   },
   "keywords": ["server", "explorer", "node", "file system","file explorer","file manager","command line","terminal"],
   "author": "mmar58",

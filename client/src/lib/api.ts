@@ -98,7 +98,7 @@ export class DirectoryRequestError extends Error {
 	}
 }
 
-const apiBaseUrl = env.PUBLIC_API_BASE_URL || 'http://127.0.0.1:3001';
+const apiBaseUrl = env.PUBLIC_API_BASE_URL || 'http://127.0.0.1:3002';
 const authStorageKey = 'node-explorer-auth-token';
 
 function getStoredToken() {
