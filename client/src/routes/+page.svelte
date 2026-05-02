@@ -168,7 +168,16 @@
 	let dragTargetPath = '';
 	let bookmarkFolders: BookmarkFolder[] = [];
 	let activeBookmarkFolderId = '';
+	let lastSavedBookmarkFolderId = '';
 	let bookmarkStorageReady = false;
+	let isBookmarkMenuOpen = false;
+	let isBookmarkManagerOpen = false;
+	let isBookmarkSaveDialogOpen = false;
+	let bookmarkDraftPath = '';
+	let bookmarkDraftName = '';
+	let bookmarkDraftFolderId = '';
+	let newBookmarkFolderName = '';
+	let renameBookmarkFolderName = '';
 
 	const imageExtensions = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'avif', 'ico']);
 	const videoExtensions = new Set(['mp4', 'webm', 'mov', 'm4v', 'avi', 'mkv']);
@@ -215,6 +224,7 @@
 	]);
 	const textFileNames = new Set(['.gitignore', '.npmrc', '.env', '.editorconfig']);
 	const BOOKMARK_STORAGE_KEY_PREFIX = 'node-explorer.bookmarks.';
+	const BOOKMARK_LAST_FOLDER_KEY_PREFIX = 'node-explorer.bookmarks.last-folder.';
 
 	function createBookmarkId() {
 		return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
@@ -228,6 +238,16 @@
 
 	function getBookmarkStorageKey(username: string) {
 		return `${BOOKMARK_STORAGE_KEY_PREFIX}${username}`;
+	}
+
+	function getBookmarkLastFolderStorageKey(username: string) {
+		return `${BOOKMARK_LAST_FOLDER_KEY_PREFIX}${username}`;
+	}
+
+	function getBookmarkDefaultName(path: string, preferredName?: string) {
+		const trimmedPreferredName = preferredName?.trim();
+		if (trimmedPreferredName) return trimmedPreferredName;
+		return path.split('/').at(-1) || path;
 	}
 
 	function normalizeBookmarkFolders(value: unknown): BookmarkFolder[] {
@@ -275,11 +295,17 @@
 		try {
 			const raw = window.localStorage.getItem(getBookmarkStorageKey(username));
 			bookmarkFolders = raw ? normalizeBookmarkFolders(JSON.parse(raw)) : [createDefaultBookmarkFolder()];
-			activeBookmarkFolderId = bookmarkFolders[0]?.id ?? '';
+			const lastSavedFolderId = window.localStorage.getItem(getBookmarkLastFolderStorageKey(username)) ?? '';
+			const fallbackFolderId = bookmarkFolders[0]?.id ?? '';
+			const resolvedFolderId =
+				bookmarkFolders.find((folder) => folder.id === lastSavedFolderId)?.id ?? fallbackFolderId;
+			activeBookmarkFolderId = resolvedFolderId;
+			lastSavedBookmarkFolderId = resolvedFolderId;
 			bookmarkStorageReady = true;
 		} catch {
 			bookmarkFolders = [createDefaultBookmarkFolder()];
 			activeBookmarkFolderId = bookmarkFolders[0]?.id ?? '';
+			lastSavedBookmarkFolderId = bookmarkFolders[0]?.id ?? '';
 			bookmarkStorageReady = true;
 		}
 	}
@@ -287,6 +313,11 @@
 	function persistBookmarksForUser(username: string, folders: BookmarkFolder[]) {
 		if (typeof window === 'undefined') return;
 		window.localStorage.setItem(getBookmarkStorageKey(username), JSON.stringify(folders));
+	}
+
+	function persistLastBookmarkFolderForUser(username: string, folderId: string) {
+		if (typeof window === 'undefined') return;
+		window.localStorage.setItem(getBookmarkLastFolderStorageKey(username), folderId);
 	}
 
 	function pushToast(title: string, message: string, tone: ToastItem['tone'] = 'error') {
@@ -330,7 +361,16 @@
 		dragTargetPath = '';
 		bookmarkFolders = [];
 		activeBookmarkFolderId = '';
+		lastSavedBookmarkFolderId = '';
 		bookmarkStorageReady = false;
+		isBookmarkMenuOpen = false;
+		isBookmarkManagerOpen = false;
+		isBookmarkSaveDialogOpen = false;
+		bookmarkDraftPath = '';
+		bookmarkDraftName = '';
+		bookmarkDraftFolderId = '';
+		newBookmarkFolderName = '';
+		renameBookmarkFolderName = '';
 		if (!skipToast) {
 			pushToast('Logged out', 'Your session was cleared.', 'info');
 		}
@@ -797,8 +837,23 @@
 	}
 
 	async function openBookmark(path: string) {
-		await loadDirectory(path);
-		selectedFilePath = path;
+		isBookmarkMenuOpen = false;
+		const targetPath = path.trim();
+		if (!targetPath) return;
+
+		await loadDirectory(targetPath);
+		if (
+			listing.currentPath === targetPath ||
+			listing.entries.some((entry) => entry.path === targetPath)
+		) {
+			selectedFilePath = targetPath;
+			return;
+		}
+
+		const lastSlashIndex = targetPath.lastIndexOf('/');
+		const parentPath = lastSlashIndex > 0 ? targetPath.slice(0, lastSlashIndex) : '/';
+		await loadDirectory(parentPath || '/');
+		selectedFilePath = targetPath;
 	}
 
 	function addBookmark(path: string, preferredName?: string, preferredFolderId?: string) {
@@ -816,10 +871,7 @@
 		const folder =
 			bookmarkFolders.find((candidate) => candidate.id === (preferredFolderId ?? activeBookmarkFolderId)) ??
 			bookmarkFolders[0];
-		const bookmarkName =
-			(preferredName?.trim() || window.prompt('Bookmark name', targetPath.split('/').at(-1) ?? targetPath)?.trim() ||
-				targetPath.split('/').at(-1) ||
-				targetPath);
+		const bookmarkName = getBookmarkDefaultName(targetPath, preferredName);
 
 		const duplicate = folder.shortcuts.find((shortcut) => shortcut.path === targetPath);
 		if (duplicate) {
@@ -839,15 +891,64 @@
 				: candidate
 		);
 		activeBookmarkFolderId = folder.id;
+		lastSavedBookmarkFolderId = folder.id;
 		pushToast('Bookmark added', `${bookmarkName} was added to ${folder.name}.`, 'info');
 	}
 
-	function addCurrentLocationBookmark() {
-		addBookmark(listing.currentPath, listing.currentPath.split('/').at(-1) ?? listing.currentPath);
+	function openAddBookmarkDialog(path: string, preferredName?: string) {
+		const targetPath = path.trim();
+		if (!targetPath) {
+			pushToast('Bookmark failed', 'A valid path is required for bookmark shortcuts.');
+			return;
+		}
+
+		if (bookmarkFolders.length === 0) {
+			const fallbackFolder = createDefaultBookmarkFolder();
+			bookmarkFolders = [fallbackFolder];
+			activeBookmarkFolderId = fallbackFolder.id;
+			lastSavedBookmarkFolderId = fallbackFolder.id;
+		}
+
+		const defaultFolderId =
+			bookmarkFolders.find((folder) => folder.id === lastSavedBookmarkFolderId)?.id ??
+			bookmarkFolders.find((folder) => folder.id === activeBookmarkFolderId)?.id ??
+			bookmarkFolders[0].id;
+
+		bookmarkDraftPath = targetPath;
+		bookmarkDraftName = getBookmarkDefaultName(targetPath, preferredName);
+		bookmarkDraftFolderId = defaultFolderId;
+		isBookmarkSaveDialogOpen = true;
+		isBookmarkMenuOpen = false;
 	}
 
-	function createBookmarkFolder() {
-		const folderName = window.prompt('New bookmark folder name', 'Quick access')?.trim();
+	function saveBookmarkFromDialog() {
+		if (!bookmarkDraftPath.trim()) {
+			pushToast('Bookmark failed', 'A valid path is required for bookmark shortcuts.');
+			return;
+		}
+
+		addBookmark(bookmarkDraftPath, bookmarkDraftName, bookmarkDraftFolderId);
+		isBookmarkSaveDialogOpen = false;
+	}
+
+	function openBookmarkManager() {
+		if (bookmarkFolders.length === 0) {
+			const fallbackFolder = createDefaultBookmarkFolder();
+			bookmarkFolders = [fallbackFolder];
+			activeBookmarkFolderId = fallbackFolder.id;
+			lastSavedBookmarkFolderId = fallbackFolder.id;
+		}
+		renameBookmarkFolderName = getActiveBookmarkFolder()?.name ?? '';
+		isBookmarkManagerOpen = true;
+		isBookmarkMenuOpen = false;
+	}
+
+	function addCurrentLocationBookmark() {
+		openAddBookmarkDialog(listing.currentPath, listing.currentPath.split('/').at(-1) ?? listing.currentPath);
+	}
+
+	function createBookmarkFolder(folderNameInput?: string) {
+		const folderName = folderNameInput?.trim();
 		if (!folderName) return;
 
 		const duplicate = bookmarkFolders.find((folder) => folder.name.toLowerCase() === folderName.toLowerCase());
@@ -861,16 +962,18 @@
 		bookmarkFolders = [...bookmarkFolders, createdFolder];
 		activeBookmarkFolderId = createdFolder.id;
 		pushToast('Folder created', `${folderName} is ready for shortcuts.`, 'info');
+		newBookmarkFolderName = '';
 	}
 
-	function renameActiveBookmarkFolder() {
+	function renameActiveBookmarkFolder(nextNameInput?: string) {
 		const folder = getActiveBookmarkFolder();
 		if (!folder) return;
-		const nextName = window.prompt('Rename bookmark folder', folder.name)?.trim();
+		const nextName = nextNameInput?.trim();
 		if (!nextName || nextName === folder.name) return;
 		bookmarkFolders = bookmarkFolders.map((candidate) =>
 			candidate.id === folder.id ? { ...candidate, name: nextName } : candidate
 		);
+		renameBookmarkFolderName = nextName;
 		pushToast('Folder renamed', `${folder.name} is now ${nextName}.`, 'info');
 	}
 
@@ -899,25 +1002,12 @@
 		);
 	}
 
-	function moveBookmark(folderId: string, shortcut: BookmarkShortcut) {
-		const destinationChoices = bookmarkFolders
-			.filter((folder) => folder.id !== folderId)
-			.map((folder) => folder.name)
-			.join(', ');
-
-		if (!destinationChoices) {
-			pushToast('No destination folders', 'Create another bookmark folder before moving shortcuts.', 'info');
-			return;
-		}
-
-		const destinationName = window.prompt(`Move to which folder? Available: ${destinationChoices}`)?.trim();
-		if (!destinationName) return;
-
+	function moveBookmarkToFolder(folderId: string, shortcut: BookmarkShortcut, destinationFolderId: string) {
 		const destinationFolder = bookmarkFolders.find(
-			(folder) => folder.id !== folderId && folder.name.toLowerCase() === destinationName.toLowerCase()
+			(folder) => folder.id !== folderId && folder.id === destinationFolderId
 		);
 		if (!destinationFolder) {
-			pushToast('Folder not found', 'Enter an existing bookmark folder name exactly.');
+			pushToast('Folder not found', 'Choose a valid bookmark folder destination.');
 			return;
 		}
 
@@ -932,6 +1022,7 @@
 			return folder;
 		});
 		activeBookmarkFolderId = destinationFolder.id;
+		lastSavedBookmarkFolderId = destinationFolder.id;
 		pushToast('Bookmark moved', `${shortcut.name} moved to ${destinationFolder.name}.`, 'info');
 	}
 
@@ -964,7 +1055,7 @@
 				await openEntry(entry);
 				return;
 			case 'bookmark':
-				addBookmark(entry.path, entry.name);
+				openAddBookmarkDialog(entry.path, entry.name);
 				return;
 			case 'preview':
 				await openPreview(entry);
@@ -1005,6 +1096,8 @@
 	$: activeTab = openTabs.find((tab) => tab.path === activeTabPath) ?? null;
 	$: activeBookmarkFolder = getActiveBookmarkFolder();
 	$: activeBookmarks = activeBookmarkFolder?.shortcuts ?? [];
+	$: bookmarkCount = bookmarkFolders.reduce((total, folder) => total + folder.shortcuts.length, 0);
+	$: bookmarkFoldersWithShortcuts = bookmarkFolders.filter((folder) => folder.shortcuts.length > 0);
 	$: breadcrumbs = getPathSegments(listing.currentPath);
 	$: filteredEntries = listing.entries.filter((entry) => {
 		const query = filterQuery.trim().toLowerCase();
@@ -1012,15 +1105,34 @@
 	});
 	$: selectedEntry = listing.entries.find((entry) => entry.path === selectedFilePath) ?? null;
 	$: contextActions = contextMenu.entry ? getContextActions(contextMenu.entry) : [];
+	$: if (bookmarkFolders.length > 0 && !bookmarkFolders.some((folder) => folder.id === activeBookmarkFolderId)) {
+		activeBookmarkFolderId = bookmarkFolders[0].id;
+	}
+	$: if (activeBookmarkFolder) {
+		renameBookmarkFolderName = activeBookmarkFolder.name;
+	}
 	$: if (bookmarkStorageReady && currentUser) {
 		persistBookmarksForUser(currentUser.username, bookmarkFolders);
+		if (lastSavedBookmarkFolderId) {
+			persistLastBookmarkFolderForUser(currentUser.username, lastSavedBookmarkFolderId);
+		}
 	}
 
 	onMount(() => {
-		const handleWindowClick = () => closeContextMenu();
+		const handleWindowClick = (event: MouseEvent) => {
+			closeContextMenu();
+			const target = event.target;
+			if (target instanceof Element && target.closest('.bookmark-menu')) {
+				return;
+			}
+			isBookmarkMenuOpen = false;
+		};
 		const handleEscape = (event: KeyboardEvent) => {
 			if (event.key === 'Escape') {
 				closeContextMenu();
+				isBookmarkMenuOpen = false;
+				isBookmarkManagerOpen = false;
+				isBookmarkSaveDialogOpen = false;
 				previewState = { ...previewState, isOpen: false };
 				isEditorModalOpen = false;
 			}
@@ -1103,6 +1215,66 @@
 				</div>
 			</div>
 			<div class="topbar-actions">
+				<div class="bookmark-menu">
+					<button
+						type="button"
+						class="ghost compact"
+						onclick={(event) => {
+							event.stopPropagation();
+							if (!isBookmarkMenuOpen && activeBookmarks.length === 0) {
+								const firstFolderWithBookmarks = bookmarkFolders.find((folder) => folder.shortcuts.length > 0);
+								if (firstFolderWithBookmarks) {
+									activeBookmarkFolderId = firstFolderWithBookmarks.id;
+								}
+							}
+							isBookmarkMenuOpen = !isBookmarkMenuOpen;
+						}}
+					>
+						<Bookmark size={15} />
+						Bookmarks ({bookmarkCount})
+					</button>
+					{#if isBookmarkMenuOpen}
+						<div class="bookmark-dropdown panel" role="menu" aria-label="Bookmarks menu">
+							<div class="bookmark-dropdown-actions">
+								<button type="button" class="ghost compact" onclick={addCurrentLocationBookmark}>
+									<BookmarkPlus size={14} />
+									Bookmark this location
+								</button>
+								<button type="button" class="ghost compact" onclick={openBookmarkManager}>Manage bookmarks</button>
+							</div>
+							<div class="bookmark-folder-row" role="tablist" aria-label="Bookmark folders">
+								{#each bookmarkFolders as folder (folder.id)}
+									<button
+										type="button"
+										class="bookmark-folder-chip"
+										class:active={folder.id === activeBookmarkFolderId}
+										onclick={() => (activeBookmarkFolderId = folder.id)}
+									>
+										<Folder size={14} />
+										<span>{folder.name}</span>
+										<small>{folder.shortcuts.length}</small>
+									</button>
+								{/each}
+							</div>
+							{#if bookmarkCount > 0}
+								<div class="bookmark-shortcuts" role="list">
+									{#each bookmarkFoldersWithShortcuts as folder (folder.id)}
+										<p class="label bookmark-folder-label">{folder.name}</p>
+										{#each folder.shortcuts as shortcut (shortcut.id)}
+											<button type="button" class="bookmark-open dropdown-bookmark-open" onclick={() => openBookmark(shortcut.path)}>
+												<Bookmark size={14} />
+												<span>{shortcut.name}</span>
+											</button>
+										{/each}
+									{/each}
+								</div>
+							{:else}
+								<p class="notice slim">No bookmarks in this folder yet.</p>
+							{/if}
+						</div>
+					{/if}
+				</div>
+
 				<div class="user-pill">
 					<UserRound size={15} />
 					<span>{currentUser.username}</span>
@@ -1152,67 +1324,6 @@
 					<p class="label">Permissions</p>
 					<p class="meta">{currentUser.role === 'admin' ? 'Administrator access grants full control across all paths.' : currentPermissions.length > 0 ? `${currentPermissions.length} explicit path permission${currentPermissions.length === 1 ? '' : 's'} assigned.` : 'No explicit path access has been assigned yet.'}</p>
 				</div>
-
-				<section class="bookmark-panel">
-					<div class="bookmark-header">
-						<div>
-							<p class="label">Bookmarks</p>
-							<h2>Folder shortcuts</h2>
-						</div>
-						<div class="sidebar-actions">
-							<button type="button" class="ghost compact" onclick={createBookmarkFolder}>
-								<FolderPlus size={14} />
-								Folder
-							</button>
-							<button type="button" class="ghost compact" onclick={addCurrentLocationBookmark}>
-								<BookmarkPlus size={14} />
-								Bookmark here
-							</button>
-						</div>
-					</div>
-
-					<div class="bookmark-folder-row" role="tablist" aria-label="Bookmark folders">
-						{#each bookmarkFolders as folder (folder.id)}
-							<button
-								type="button"
-								class="bookmark-folder-chip"
-								class:active={folder.id === activeBookmarkFolderId}
-								onclick={() => (activeBookmarkFolderId = folder.id)}
-							>
-								<Folder size={14} />
-								<span>{folder.name}</span>
-								<small>{folder.shortcuts.length}</small>
-							</button>
-						{/each}
-					</div>
-
-					{#if activeBookmarkFolder}
-						<div class="bookmark-folder-tools">
-							<button type="button" class="ghost compact" onclick={renameActiveBookmarkFolder}>Rename folder</button>
-							<button type="button" class="ghost compact danger" onclick={removeActiveBookmarkFolder}>Delete folder</button>
-						</div>
-
-						{#if activeBookmarks.length === 0}
-							<p class="notice slim">No shortcuts in this folder yet.</p>
-						{:else}
-							<div class="bookmark-shortcuts" role="list">
-								{#each activeBookmarks as shortcut (shortcut.id)}
-									<div class="bookmark-item" role="listitem">
-										<button type="button" class="bookmark-open" onclick={() => openBookmark(shortcut.path)}>
-											<Bookmark size={14} />
-											<span>{shortcut.name}</span>
-										</button>
-										<small>{shortcut.path}</small>
-										<div class="bookmark-item-actions">
-											<button type="button" class="ghost compact" onclick={() => moveBookmark(activeBookmarkFolder.id, shortcut)}>Move</button>
-											<button type="button" class="ghost compact danger" onclick={() => removeBookmark(activeBookmarkFolder.id, shortcut.id)}>Remove</button>
-										</div>
-									</div>
-								{/each}
-							</div>
-						{/if}
-					{/if}
-				</section>
 
 				{#if currentUser.role === 'admin' && isAdminPanelOpen}
 					<section class="admin-panel">
@@ -1445,6 +1556,128 @@
 				</div>
 			</div>
 		{/if}
+
+		{#if isBookmarkSaveDialogOpen}
+			<div class="modal-backdrop" role="button" tabindex="0" aria-label="Close bookmark save dialog" onclick={() => (isBookmarkSaveDialogOpen = false)} onkeydown={(event) => event.key === 'Escape' && (isBookmarkSaveDialogOpen = false)}>
+				<div class="modal-panel bookmark-modal" role="dialog" tabindex="-1" aria-modal="true" aria-label="Save bookmark" onclick={(event) => event.stopPropagation()} onkeydown={(event) => event.stopPropagation()}>
+					<header class="modal-header">
+						<div>
+							<p class="label">Save bookmark</p>
+							<h2>Choose bookmark folder</h2>
+							<p class="meta">The folder defaults to the last folder used for saving bookmarks.</p>
+						</div>
+						<div class="toolbar-actions">
+							<button type="button" class="ghost compact" onclick={() => (isBookmarkSaveDialogOpen = false)}><X size={15} />Close</button>
+							<button type="button" class="compact" onclick={saveBookmarkFromDialog}><Save size={15} />Save bookmark</button>
+						</div>
+					</header>
+					<div class="bookmark-dialog-grid">
+						<label class="field-block">
+							<span>Bookmark name</span>
+							<input bind:value={bookmarkDraftName} class="text-input" placeholder="Project root" />
+						</label>
+						<label class="field-block">
+							<span>Folder</span>
+							<select bind:value={bookmarkDraftFolderId} class="text-input select-input">
+								{#each bookmarkFolders as folder (folder.id)}
+									<option value={folder.id}>{folder.name}</option>
+								{/each}
+							</select>
+						</label>
+						<label class="field-block">
+							<span>Path</span>
+							<input bind:value={bookmarkDraftPath} class="text-input" />
+						</label>
+					</div>
+				</div>
+			</div>
+		{/if}
+
+		{#if isBookmarkManagerOpen}
+			<div class="modal-backdrop" role="button" tabindex="0" aria-label="Close bookmark manager" onclick={() => (isBookmarkManagerOpen = false)} onkeydown={(event) => event.key === 'Escape' && (isBookmarkManagerOpen = false)}>
+				<div class="modal-panel bookmark-modal" role="dialog" tabindex="-1" aria-modal="true" aria-label="Manage bookmarks" onclick={(event) => event.stopPropagation()} onkeydown={(event) => event.stopPropagation()}>
+					<header class="modal-header">
+						<div>
+							<p class="label">Manage bookmarks</p>
+							<h2>Bookmarks and folders</h2>
+							<p class="meta">Create folders, rename folders, move bookmarks, and remove bookmarks.</p>
+						</div>
+						<div class="toolbar-actions">
+							<button type="button" class="ghost compact" onclick={() => (isBookmarkManagerOpen = false)}><X size={15} />Close</button>
+						</div>
+					</header>
+
+					<div class="bookmark-manager-grid">
+						<section class="bookmark-panel">
+							<p class="label">Folder actions</p>
+							<label class="field-block">
+								<span>Create folder</span>
+								<div class="bookmark-inline-actions">
+									<input bind:value={newBookmarkFolderName} class="text-input" placeholder="Quick access" />
+									<button type="button" class="ghost compact" onclick={() => createBookmarkFolder(newBookmarkFolderName)}>
+										<FolderPlus size={14} />
+										Add
+									</button>
+								</div>
+							</label>
+
+							<div class="bookmark-folder-row" role="tablist" aria-label="Bookmark folders">
+								{#each bookmarkFolders as folder (folder.id)}
+									<button
+										type="button"
+										class="bookmark-folder-chip"
+										class:active={folder.id === activeBookmarkFolderId}
+										onclick={() => (activeBookmarkFolderId = folder.id)}
+									>
+										<Folder size={14} />
+										<span>{folder.name}</span>
+										<small>{folder.shortcuts.length}</small>
+									</button>
+								{/each}
+							</div>
+
+							{#if activeBookmarkFolder}
+								<label class="field-block">
+									<span>Rename active folder</span>
+									<div class="bookmark-inline-actions">
+										<input bind:value={renameBookmarkFolderName} class="text-input" />
+										<button type="button" class="ghost compact" onclick={() => renameActiveBookmarkFolder(renameBookmarkFolderName)}>Rename</button>
+										<button type="button" class="ghost compact danger" onclick={removeActiveBookmarkFolder}>Delete</button>
+									</div>
+								</label>
+							{/if}
+						</section>
+
+						<section class="bookmark-panel">
+							<p class="label">Shortcuts in active folder</p>
+							{#if activeBookmarkFolder && activeBookmarks.length > 0}
+								<div class="bookmark-shortcuts" role="list">
+									{#each activeBookmarks as shortcut (shortcut.id)}
+										<div class="bookmark-item" role="listitem">
+											<button type="button" class="bookmark-open" onclick={() => openBookmark(shortcut.path)}>
+												<Bookmark size={14} />
+												<span>{shortcut.name}</span>
+											</button>
+											<small>{shortcut.path}</small>
+											<div class="bookmark-item-actions">
+												{#each bookmarkFolders.filter((folder) => folder.id !== activeBookmarkFolder.id) as destinationFolder (destinationFolder.id)}
+													<button type="button" class="ghost compact" onclick={() => moveBookmarkToFolder(activeBookmarkFolder.id, shortcut, destinationFolder.id)}>
+														Move to {destinationFolder.name}
+													</button>
+												{/each}
+												<button type="button" class="ghost compact danger" onclick={() => removeBookmark(activeBookmarkFolder.id, shortcut.id)}>Remove</button>
+											</div>
+										</div>
+									{/each}
+								</div>
+							{:else}
+								<p class="notice slim">No bookmarks in this folder yet.</p>
+							{/if}
+						</section>
+					</div>
+				</div>
+			</div>
+		{/if}
 	{/if}
 </div>
 
@@ -1644,8 +1877,6 @@
 		gap: 10px;
 	}
 
-	.bookmark-header,
-	.bookmark-folder-tools,
 	.bookmark-item-actions {
 		display: flex;
 		justify-content: space-between;
@@ -1786,6 +2017,51 @@
 		gap: 10px;
 		align-items: center;
 		flex-wrap: wrap;
+	}
+
+	.bookmark-menu {
+		position: relative;
+	}
+
+	.bookmark-dropdown {
+		position: absolute;
+		right: 0;
+		top: calc(100% + 8px);
+		width: min(480px, calc(100vw - 28px));
+		padding: 12px;
+		border-radius: 16px;
+		display: grid;
+		gap: 10px;
+		z-index: 10;
+	}
+
+	.bookmark-dropdown-actions,
+	.bookmark-inline-actions {
+		display: flex;
+		gap: 8px;
+		align-items: center;
+		flex-wrap: wrap;
+	}
+
+	.bookmark-inline-actions .text-input {
+		flex: 1;
+		min-width: 180px;
+	}
+
+	.dropdown-bookmark-open {
+		width: 100%;
+		padding: 8px 10px;
+		border-radius: 10px;
+		border: 1px solid rgba(136, 167, 219, 0.14);
+		background: rgba(16, 28, 46, 0.72);
+	}
+
+	.dropdown-bookmark-open:hover {
+		background: rgba(20, 38, 63, 0.92);
+	}
+
+	.bookmark-folder-label {
+		margin-top: 2px;
 	}
 
 	button {
@@ -2097,6 +2373,21 @@
 		height: calc(100vh - 220px);
 	}
 
+	.bookmark-modal {
+		width: min(980px, 100%);
+	}
+
+	.bookmark-dialog-grid {
+		display: grid;
+		gap: 12px;
+	}
+
+	.bookmark-manager-grid {
+		display: grid;
+		grid-template-columns: 320px minmax(0, 1fr);
+		gap: 12px;
+	}
+
 	@media (max-width: 1180px) {
 		.workspace-frame {
 			grid-template-columns: 1fr;
@@ -2114,12 +2405,19 @@
 		.tray-header,
 		.modal-header,
 		.admin-header,
-		.bookmark-header,
-		.bookmark-folder-tools,
 		.bookmark-item-actions,
 		.permission-pill,
 		.admin-user-heading {
 			flex-direction: column;
+		}
+
+		.bookmark-dropdown {
+			position: static;
+			width: 100%;
+		}
+
+		.bookmark-manager-grid {
+			grid-template-columns: 1fr;
 		}
 
 		.attached-editor {
