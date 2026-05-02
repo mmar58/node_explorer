@@ -3,6 +3,8 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import {
+		Bookmark,
+		BookmarkPlus,
 		ChevronUp,
 		Download,
 		File,
@@ -10,6 +12,7 @@
 		FileCode2,
 		FileText,
 		Folder,
+		FolderPlus,
 		FolderUp,
 		HardDrive,
 		Image as ImageIcon,
@@ -103,6 +106,19 @@
 
 	type AuthMode = 'login' | 'register';
 
+	type BookmarkShortcut = {
+		id: string;
+		name: string;
+		path: string;
+		createdAt: string;
+	};
+
+	type BookmarkFolder = {
+		id: string;
+		name: string;
+		shortcuts: BookmarkShortcut[];
+	};
+
 	let listing: FileListingState = {
 		currentPath: '/',
 		parentPath: null,
@@ -150,6 +166,9 @@
 	let folderUploadInput: HTMLInputElement;
 	let uploadTargetPath = '/';
 	let dragTargetPath = '';
+	let bookmarkFolders: BookmarkFolder[] = [];
+	let activeBookmarkFolderId = '';
+	let bookmarkStorageReady = false;
 
 	const imageExtensions = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'avif', 'ico']);
 	const videoExtensions = new Set(['mp4', 'webm', 'mov', 'm4v', 'avi', 'mkv']);
@@ -195,6 +214,80 @@
 		'env'
 	]);
 	const textFileNames = new Set(['.gitignore', '.npmrc', '.env', '.editorconfig']);
+	const BOOKMARK_STORAGE_KEY_PREFIX = 'node-explorer.bookmarks.';
+
+	function createBookmarkId() {
+		return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+			? crypto.randomUUID()
+			: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+	}
+
+	function createDefaultBookmarkFolder(): BookmarkFolder {
+		return { id: createBookmarkId(), name: 'Bookmarks', shortcuts: [] };
+	}
+
+	function getBookmarkStorageKey(username: string) {
+		return `${BOOKMARK_STORAGE_KEY_PREFIX}${username}`;
+	}
+
+	function normalizeBookmarkFolders(value: unknown): BookmarkFolder[] {
+		if (!Array.isArray(value)) {
+			return [createDefaultBookmarkFolder()];
+		}
+
+		const folders = value
+			.map((folder) => {
+				if (!folder || typeof folder !== 'object') return null;
+				const candidate = folder as Partial<BookmarkFolder>;
+				const name = String(candidate.name ?? '').trim();
+				const shortcuts = Array.isArray(candidate.shortcuts)
+					? candidate.shortcuts
+							.map((shortcut) => {
+								if (!shortcut || typeof shortcut !== 'object') return null;
+								const item = shortcut as Partial<BookmarkShortcut>;
+								const path = String(item.path ?? '').trim();
+								if (!path) return null;
+								return {
+									id: String(item.id ?? createBookmarkId()),
+									name: String(item.name ?? path.split('/').at(-1) ?? path).trim() || path,
+									path,
+									createdAt: typeof item.createdAt === 'string' ? item.createdAt : new Date().toISOString()
+								} satisfies BookmarkShortcut;
+							})
+							.filter((shortcut): shortcut is BookmarkShortcut => shortcut !== null)
+					: [];
+
+				if (!name) return null;
+				return {
+					id: String(candidate.id ?? createBookmarkId()),
+					name,
+					shortcuts
+				} satisfies BookmarkFolder;
+			})
+			.filter((folder): folder is BookmarkFolder => folder !== null);
+
+		return folders.length > 0 ? folders : [createDefaultBookmarkFolder()];
+	}
+
+	function loadBookmarksForUser(username: string) {
+		if (typeof window === 'undefined') return;
+
+		try {
+			const raw = window.localStorage.getItem(getBookmarkStorageKey(username));
+			bookmarkFolders = raw ? normalizeBookmarkFolders(JSON.parse(raw)) : [createDefaultBookmarkFolder()];
+			activeBookmarkFolderId = bookmarkFolders[0]?.id ?? '';
+			bookmarkStorageReady = true;
+		} catch {
+			bookmarkFolders = [createDefaultBookmarkFolder()];
+			activeBookmarkFolderId = bookmarkFolders[0]?.id ?? '';
+			bookmarkStorageReady = true;
+		}
+	}
+
+	function persistBookmarksForUser(username: string, folders: BookmarkFolder[]) {
+		if (typeof window === 'undefined') return;
+		window.localStorage.setItem(getBookmarkStorageKey(username), JSON.stringify(folders));
+	}
 
 	function pushToast(title: string, message: string, tone: ToastItem['tone'] = 'error') {
 		const id = ++toastId;
@@ -235,6 +328,9 @@
 		previewState = { isOpen: false, title: '', kind: 'other', src: '', archiveEntries: [] };
 		contextMenu = { isOpen: false, x: 0, y: 0, entry: null };
 		dragTargetPath = '';
+		bookmarkFolders = [];
+		activeBookmarkFolderId = '';
+		bookmarkStorageReady = false;
 		if (!skipToast) {
 			pushToast('Logged out', 'Your session was cleared.', 'info');
 		}
@@ -313,6 +409,7 @@
 			const session = await getCurrentSession();
 			currentUser = session.user;
 			currentPermissions = session.permissions;
+			loadBookmarksForUser(session.user.username);
 			isAdminPanelOpen = session.user.role === 'admin';
 			await loadDirectory('/');
 			if (session.user.role === 'admin') {
@@ -342,6 +439,7 @@
 			const session = await getCurrentSession();
 			currentUser = session.user;
 			currentPermissions = session.permissions;
+			loadBookmarksForUser(session.user.username);
 			isAdminPanelOpen = session.user.role === 'admin';
 			await loadDirectory('/');
 			if (session.user.role === 'admin') {
@@ -694,9 +792,153 @@
 		}
 	}
 
+	function getActiveBookmarkFolder() {
+		return bookmarkFolders.find((folder) => folder.id === activeBookmarkFolderId) ?? bookmarkFolders[0] ?? null;
+	}
+
+	async function openBookmark(path: string) {
+		await loadDirectory(path);
+		selectedFilePath = path;
+	}
+
+	function addBookmark(path: string, preferredName?: string, preferredFolderId?: string) {
+		const targetPath = path.trim();
+		if (!targetPath) {
+			pushToast('Bookmark failed', 'A valid path is required for bookmark shortcuts.');
+			return;
+		}
+
+		if (bookmarkFolders.length === 0) {
+			bookmarkFolders = [createDefaultBookmarkFolder()];
+			activeBookmarkFolderId = bookmarkFolders[0].id;
+		}
+
+		const folder =
+			bookmarkFolders.find((candidate) => candidate.id === (preferredFolderId ?? activeBookmarkFolderId)) ??
+			bookmarkFolders[0];
+		const bookmarkName =
+			(preferredName?.trim() || window.prompt('Bookmark name', targetPath.split('/').at(-1) ?? targetPath)?.trim() ||
+				targetPath.split('/').at(-1) ||
+				targetPath);
+
+		const duplicate = folder.shortcuts.find((shortcut) => shortcut.path === targetPath);
+		if (duplicate) {
+			pushToast('Already bookmarked', `${folder.name} already includes this location.`, 'info');
+			return;
+		}
+
+		bookmarkFolders = bookmarkFolders.map((candidate) =>
+			candidate.id === folder.id
+				? {
+					...candidate,
+					shortcuts: [
+						...candidate.shortcuts,
+						{ id: createBookmarkId(), name: bookmarkName, path: targetPath, createdAt: new Date().toISOString() }
+					]
+				}
+				: candidate
+		);
+		activeBookmarkFolderId = folder.id;
+		pushToast('Bookmark added', `${bookmarkName} was added to ${folder.name}.`, 'info');
+	}
+
+	function addCurrentLocationBookmark() {
+		addBookmark(listing.currentPath, listing.currentPath.split('/').at(-1) ?? listing.currentPath);
+	}
+
+	function createBookmarkFolder() {
+		const folderName = window.prompt('New bookmark folder name', 'Quick access')?.trim();
+		if (!folderName) return;
+
+		const duplicate = bookmarkFolders.find((folder) => folder.name.toLowerCase() === folderName.toLowerCase());
+		if (duplicate) {
+			activeBookmarkFolderId = duplicate.id;
+			pushToast('Folder exists', 'Bookmark folder already exists. Selected existing folder.', 'info');
+			return;
+		}
+
+		const createdFolder: BookmarkFolder = { id: createBookmarkId(), name: folderName, shortcuts: [] };
+		bookmarkFolders = [...bookmarkFolders, createdFolder];
+		activeBookmarkFolderId = createdFolder.id;
+		pushToast('Folder created', `${folderName} is ready for shortcuts.`, 'info');
+	}
+
+	function renameActiveBookmarkFolder() {
+		const folder = getActiveBookmarkFolder();
+		if (!folder) return;
+		const nextName = window.prompt('Rename bookmark folder', folder.name)?.trim();
+		if (!nextName || nextName === folder.name) return;
+		bookmarkFolders = bookmarkFolders.map((candidate) =>
+			candidate.id === folder.id ? { ...candidate, name: nextName } : candidate
+		);
+		pushToast('Folder renamed', `${folder.name} is now ${nextName}.`, 'info');
+	}
+
+	function removeActiveBookmarkFolder() {
+		const folder = getActiveBookmarkFolder();
+		if (!folder) return;
+		if (!window.confirm(`Delete bookmark folder ${folder.name}?`)) return;
+
+		const remainingFolders = bookmarkFolders.filter((candidate) => candidate.id !== folder.id);
+		if (remainingFolders.length === 0) {
+			const fallbackFolder = createDefaultBookmarkFolder();
+			bookmarkFolders = [fallbackFolder];
+			activeBookmarkFolderId = fallbackFolder.id;
+		} else {
+			bookmarkFolders = remainingFolders;
+			activeBookmarkFolderId = remainingFolders[0].id;
+		}
+		pushToast('Folder removed', `${folder.name} was deleted.`, 'info');
+	}
+
+	function removeBookmark(folderId: string, shortcutId: string) {
+		bookmarkFolders = bookmarkFolders.map((folder) =>
+			folder.id === folderId
+				? { ...folder, shortcuts: folder.shortcuts.filter((shortcut) => shortcut.id !== shortcutId) }
+				: folder
+		);
+	}
+
+	function moveBookmark(folderId: string, shortcut: BookmarkShortcut) {
+		const destinationChoices = bookmarkFolders
+			.filter((folder) => folder.id !== folderId)
+			.map((folder) => folder.name)
+			.join(', ');
+
+		if (!destinationChoices) {
+			pushToast('No destination folders', 'Create another bookmark folder before moving shortcuts.', 'info');
+			return;
+		}
+
+		const destinationName = window.prompt(`Move to which folder? Available: ${destinationChoices}`)?.trim();
+		if (!destinationName) return;
+
+		const destinationFolder = bookmarkFolders.find(
+			(folder) => folder.id !== folderId && folder.name.toLowerCase() === destinationName.toLowerCase()
+		);
+		if (!destinationFolder) {
+			pushToast('Folder not found', 'Enter an existing bookmark folder name exactly.');
+			return;
+		}
+
+		bookmarkFolders = bookmarkFolders.map((folder) => {
+			if (folder.id === folderId) {
+				return { ...folder, shortcuts: folder.shortcuts.filter((item) => item.id !== shortcut.id) };
+			}
+			if (folder.id === destinationFolder.id) {
+				const alreadyExists = folder.shortcuts.some((item) => item.path === shortcut.path);
+				return alreadyExists ? folder : { ...folder, shortcuts: [...folder.shortcuts, shortcut] };
+			}
+			return folder;
+		});
+		activeBookmarkFolderId = destinationFolder.id;
+		pushToast('Bookmark moved', `${shortcut.name} moved to ${destinationFolder.name}.`, 'info');
+	}
+
 	function getContextActions(entry: FileEntry) {
 		const baseActions = [
 			{ id: 'open', label: entry.type === 'directory' ? 'Open folder' : 'Open' },
+			{ id: 'bookmark', label: 'Add bookmark' },
 			{ id: 'download', label: entry.type === 'directory' ? 'Download folder (.zip)' : 'Download file' },
 			{ id: 'rename', label: 'Rename' },
 			{ id: 'move', label: 'Move' },
@@ -720,6 +962,9 @@
 			case 'open':
 			case 'open-editor':
 				await openEntry(entry);
+				return;
+			case 'bookmark':
+				addBookmark(entry.path, entry.name);
 				return;
 			case 'preview':
 				await openPreview(entry);
@@ -758,6 +1003,8 @@
 	}
 
 	$: activeTab = openTabs.find((tab) => tab.path === activeTabPath) ?? null;
+	$: activeBookmarkFolder = getActiveBookmarkFolder();
+	$: activeBookmarks = activeBookmarkFolder?.shortcuts ?? [];
 	$: breadcrumbs = getPathSegments(listing.currentPath);
 	$: filteredEntries = listing.entries.filter((entry) => {
 		const query = filterQuery.trim().toLowerCase();
@@ -765,6 +1012,9 @@
 	});
 	$: selectedEntry = listing.entries.find((entry) => entry.path === selectedFilePath) ?? null;
 	$: contextActions = contextMenu.entry ? getContextActions(contextMenu.entry) : [];
+	$: if (bookmarkStorageReady && currentUser) {
+		persistBookmarksForUser(currentUser.username, bookmarkFolders);
+	}
 
 	onMount(() => {
 		const handleWindowClick = () => closeContextMenu();
@@ -822,7 +1072,7 @@
 				</label>
 				<label class="field-block">
 					<span>Password</span>
-					<input bind:value={authPassword} class="text-input" type="password" placeholder="At least 8 characters" autocomplete={authMode === 'login' ? 'current-password' : 'new-password'} />
+					<input bind:value={authPassword} class="text-input" type="password" placeholder="Enter your password" autocomplete={authMode === 'login' ? 'current-password' : 'new-password'} />
 				</label>
 				<div class="auth-actions">
 					<button type="submit" class="compact" disabled={isAuthenticating}>
@@ -902,6 +1152,67 @@
 					<p class="label">Permissions</p>
 					<p class="meta">{currentUser.role === 'admin' ? 'Administrator access grants full control across all paths.' : currentPermissions.length > 0 ? `${currentPermissions.length} explicit path permission${currentPermissions.length === 1 ? '' : 's'} assigned.` : 'No explicit path access has been assigned yet.'}</p>
 				</div>
+
+				<section class="bookmark-panel">
+					<div class="bookmark-header">
+						<div>
+							<p class="label">Bookmarks</p>
+							<h2>Folder shortcuts</h2>
+						</div>
+						<div class="sidebar-actions">
+							<button type="button" class="ghost compact" onclick={createBookmarkFolder}>
+								<FolderPlus size={14} />
+								Folder
+							</button>
+							<button type="button" class="ghost compact" onclick={addCurrentLocationBookmark}>
+								<BookmarkPlus size={14} />
+								Bookmark here
+							</button>
+						</div>
+					</div>
+
+					<div class="bookmark-folder-row" role="tablist" aria-label="Bookmark folders">
+						{#each bookmarkFolders as folder (folder.id)}
+							<button
+								type="button"
+								class="bookmark-folder-chip"
+								class:active={folder.id === activeBookmarkFolderId}
+								onclick={() => (activeBookmarkFolderId = folder.id)}
+							>
+								<Folder size={14} />
+								<span>{folder.name}</span>
+								<small>{folder.shortcuts.length}</small>
+							</button>
+						{/each}
+					</div>
+
+					{#if activeBookmarkFolder}
+						<div class="bookmark-folder-tools">
+							<button type="button" class="ghost compact" onclick={renameActiveBookmarkFolder}>Rename folder</button>
+							<button type="button" class="ghost compact danger" onclick={removeActiveBookmarkFolder}>Delete folder</button>
+						</div>
+
+						{#if activeBookmarks.length === 0}
+							<p class="notice slim">No shortcuts in this folder yet.</p>
+						{:else}
+							<div class="bookmark-shortcuts" role="list">
+								{#each activeBookmarks as shortcut (shortcut.id)}
+									<div class="bookmark-item" role="listitem">
+										<button type="button" class="bookmark-open" onclick={() => openBookmark(shortcut.path)}>
+											<Bookmark size={14} />
+											<span>{shortcut.name}</span>
+										</button>
+										<small>{shortcut.path}</small>
+										<div class="bookmark-item-actions">
+											<button type="button" class="ghost compact" onclick={() => moveBookmark(activeBookmarkFolder.id, shortcut)}>Move</button>
+											<button type="button" class="ghost compact danger" onclick={() => removeBookmark(activeBookmarkFolder.id, shortcut.id)}>Remove</button>
+										</div>
+									</div>
+								{/each}
+							</div>
+						{/if}
+					{/if}
+				</section>
 
 				{#if currentUser.role === 'admin' && isAdminPanelOpen}
 					<section class="admin-panel">
@@ -1030,6 +1341,7 @@
 						<p class="meta">{activeTab?.path ?? selectedEntry?.path ?? 'Open code or text files into tabs. Media, PDF, and zip files open in preview overlays.'}</p>
 					</div>
 					<div class="toolbar-actions">
+						<button type="button" class="ghost compact" onclick={addCurrentLocationBookmark}><BookmarkPlus size={15} />Bookmark location</button>
 						{#if selectedEntry}
 							<button type="button" class="ghost compact" onclick={() => downloadItem(selectedEntry.path)}><Download size={15} />Download</button>
 							<button type="button" class="ghost compact" onclick={() => renameEntry(selectedEntry)}>Rename</button>
@@ -1321,6 +1633,82 @@
 		border-radius: 18px;
 		background: rgba(16, 28, 46, 0.72);
 		border: 1px solid rgba(136, 167, 219, 0.12);
+	}
+
+	.bookmark-panel {
+		padding: 14px;
+		border-radius: 18px;
+		background: rgba(16, 28, 46, 0.72);
+		border: 1px solid rgba(136, 167, 219, 0.12);
+		display: grid;
+		gap: 10px;
+	}
+
+	.bookmark-header,
+	.bookmark-folder-tools,
+	.bookmark-item-actions {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		gap: 8px;
+		flex-wrap: wrap;
+	}
+
+	.bookmark-folder-row {
+		display: flex;
+		gap: 8px;
+		overflow-x: auto;
+		padding-bottom: 2px;
+	}
+
+	.bookmark-folder-chip {
+		padding: 8px 10px;
+		border-radius: 999px;
+		background: rgba(118, 151, 212, 0.12);
+		border: 1px solid rgba(136, 167, 219, 0.2);
+		color: #e4eeff;
+		font-size: 0.84rem;
+	}
+
+	.bookmark-folder-chip small {
+		padding: 2px 7px;
+		border-radius: 999px;
+		background: rgba(95, 160, 255, 0.2);
+		font-size: 0.74rem;
+	}
+
+	.bookmark-folder-chip.active {
+		background: rgba(58, 111, 186, 0.58);
+		border-color: rgba(141, 193, 255, 0.54);
+	}
+
+	.bookmark-shortcuts {
+		display: grid;
+		gap: 8px;
+	}
+
+	.bookmark-item {
+		padding: 10px;
+		border-radius: 12px;
+		background: rgba(8, 18, 32, 0.78);
+		border: 1px solid rgba(136, 167, 219, 0.15);
+		display: grid;
+		gap: 6px;
+	}
+
+	.bookmark-open {
+		justify-content: flex-start;
+		background: transparent;
+		border: 0;
+		padding: 0;
+		color: #edf3ff;
+		font-weight: 600;
+	}
+
+	.bookmark-item small {
+		color: #9fb5dc;
+		font-size: 0.78rem;
+		word-break: break-all;
 	}
 
 	.admin-panel {
@@ -1726,6 +2114,9 @@
 		.tray-header,
 		.modal-header,
 		.admin-header,
+		.bookmark-header,
+		.bookmark-folder-tools,
+		.bookmark-item-actions,
 		.permission-pill,
 		.admin-user-heading {
 			flex-direction: column;
