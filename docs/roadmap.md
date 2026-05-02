@@ -13,6 +13,7 @@ Completed:
 - PTY-backed terminal websocket endpoint
 - User registration, login, JWT auth hooks, and admin permission endpoints
 - Client workspace page with browser, editor tabs, media/archive previews, context menus, upload/download actions, and terminal panels
+- Per-user bookmark shortcuts with folder organisation, top-navbar dropdown, save dialog with last-folder default, and manage-bookmarks popup
 - Root workspace scripts for running and checking both apps
 - Root server test script and focused unit tests for auth/permission helpers
 - `server/schema.sql` for manual MySQL bootstrap

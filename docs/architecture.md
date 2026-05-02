@@ -122,6 +122,7 @@ The main workspace UI currently lives in `client/src/routes/+page.svelte` and co
 - terminal panel state
 - auth/admin panel state
 - toast notifications
+- bookmark state (folders, shortcuts, active folder, last-saved folder)
 
 ### 6.2 Client Utilities and Components
 
@@ -131,6 +132,12 @@ The main workspace UI currently lives in `client/src/routes/+page.svelte` and co
 - `client/src/lib/components/FilePreviewModal.svelte`: media/archive/document previews
 - `client/src/lib/components/FileContextMenu.svelte`: contextual file actions
 - `client/src/lib/components/ToastStack.svelte`: feedback and error messages
+
+Bookmarks are stored per-user in `localStorage` under the key `node-explorer.bookmarks.<username>`, with the last-used folder tracked separately under `node-explorer.bookmarks.last-folder.<username>`. The bookmark UI includes:
+
+- A **top-navbar dropdown** listing all bookmarks grouped by folder, with quick-open on click and actions to bookmark the current location or open the manager.
+- A **save-bookmark dialog** with editable name, path, and a folder `<select>` that defaults to the last folder used for saving.
+- A **manage-bookmarks popup** for creating and renaming folders, moving bookmarks between folders, and removing bookmarks or whole folders.
 
 The client chooses behavior by file type:
 

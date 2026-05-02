@@ -8,6 +8,7 @@ The repository currently contains a working vertical slice:
 - A Fastify server in `server/`
 - Working filesystem browsing plus file preview, upload, download, upload drag-drop, rename, move, delete, and UTF-8 text-file edit endpoints
 - A browser workspace UI with typed opening, editor tabs, popup previews, context menus, toasts, and an embedded terminal
+- Bookmark shortcuts with folder organisation, a top-navbar dropdown, and a full manage-bookmarks popup
 - Registration/login plus JWT-protected APIs and per-path permissions backed by MySQL
 
 ## Current Status
@@ -38,6 +39,9 @@ Implemented now:
 - Absolute-path browsing across the serving machine
 - Windows drive listing at `/` with parent-path aware navigation for admins and permission-root listing for non-admin users
 - Browser UI on the client home page with directory navigation, editor tabs, media/archive previews, upload/download actions, and terminal access
+- Bookmark shortcuts stored per-user in localStorage, organised into named folders, accessible from a Chrome-style top-navbar dropdown
+- Bookmark save dialog with name, folder selector (defaults to last used folder), and editable path
+- Manage Bookmarks popup for creating/renaming/deleting folders and moving or removing individual shortcuts
 
 Planned next:
 
@@ -129,6 +133,6 @@ The backend currently supports these environment variables:
 
 ## Notes
 
-- The current implementation now includes registration, login, JWT-based protected routes, per-path permission checks, and an admin permission UI in addition to browsing, previews, upload/download, text-file editing, and the PTY-backed terminal.
+- The current implementation includes registration, login, JWT-based protected routes, per-path permission checks, and an admin permission UI in addition to browsing, previews, upload/download, text-file editing, the PTY-backed terminal, and a per-user bookmark system with folder management.
 - The broader product scope is tracked in `Instructions.md` and summarized in `docs/roadmap.md`.
 - Use pnpm only. Do not mix npm or yarn into this workspace.
