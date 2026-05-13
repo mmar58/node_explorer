@@ -8,7 +8,8 @@ const config = {
 	},
 	kit: {
 		adapter: adapter({
-			fallback: 'index.html'
+			fallback: 'index.html',
+			base: '/explorer'
 		})
 	}
 };
