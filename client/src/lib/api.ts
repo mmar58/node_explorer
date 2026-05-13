@@ -1,4 +1,4 @@
-import { env } from '$env/dynamic/public';
+import { PUBLIC_API_BASE_URL } from '$env/static/public';
 
 export type UserRole = 'admin' | 'user';
 
@@ -98,7 +98,7 @@ export class DirectoryRequestError extends Error {
 	}
 }
 
-const apiBaseUrl = env.PUBLIC_API_BASE_URL || 'http://127.0.0.1:3002';
+const apiBaseUrl = PUBLIC_API_BASE_URL || 'http://127.0.0.1:3002';
 const authStorageKey = 'node-explorer-auth-token';
 
 function getStoredToken() {
