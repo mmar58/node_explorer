@@ -14,7 +14,7 @@
 	"devDependencies": {
 		"@fontsource-variable/inter": "^5.2.8",
 		"@lucide/svelte": "^1.9.0",
-		"@sveltejs/adapter-auto": "latest",
+		"@sveltejs/adapter-static": "latest",
 		"@sveltejs/kit": "latest",
 		"@sveltejs/vite-plugin-svelte": "^7.0.0",
 		"clsx": "^2.1.1",
