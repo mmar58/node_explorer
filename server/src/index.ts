@@ -10,7 +10,7 @@ import { healthRoutes } from './routes/health.js';
 import { terminalRoutes } from './routes/terminal.js';
 import { authPlugin } from './plugins/auth.js';
 
-const app = Fastify({ logger: true });
+const app = Fastify({ logger: true, bodyLimit: Infinity });
 
 await app.register(cors, {
 	origin: true,

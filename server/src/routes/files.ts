@@ -22,7 +22,7 @@ import {
 import { ensurePathPermission, listPermissionRoots } from '../services/permission.js';
 
 export const fileRoutes: FastifyPluginAsync = async (app) => {
-	await app.register(multipart);
+	await app.register(multipart, { limits: { fileSize: Infinity, files: Infinity } });
 	app.addHook('preHandler', app.authenticate);
 
 	app.get<{ Querystring: { path?: string } }>('/api/files', async (request, reply) => {
